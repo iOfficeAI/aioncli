@@ -10,6 +10,9 @@ export enum DetectedIde {
   Cursor = 'cursor',
   CloudShell = 'cloudshell',
   Codespaces = 'codespaces',
+  Windsurf = 'windsurf',
+  FirebaseStudio = 'firebasestudio',
+  Trae = 'trae',
 }
 
 export function getIdeDisplayName(ide: DetectedIde): string {
@@ -24,6 +27,12 @@ export function getIdeDisplayName(ide: DetectedIde): string {
       return 'Cloud Shell';
     case DetectedIde.Codespaces:
       return 'GitHub Codespaces';
+    case DetectedIde.Windsurf:
+      return 'Windsurf';
+    case DetectedIde.FirebaseStudio:
+      return 'Firebase Studio';
+    case DetectedIde.Trae:
+      return 'Trae';
     default: {
       // This ensures that if a new IDE is added to the enum, we get a compile-time error.
       const exhaustiveCheck: never = ide;
@@ -39,11 +48,14 @@ export function detectIde(): DetectedIde | undefined {
   if (process.env.CODESPACES) {
     return DetectedIde.Codespaces;
   }
-  if (process.env.EDITOR_IN_CLOUD_SHELL === 'true') {
+  if (process.env.EDITOR_IN_CLOUD_SHELL) {
     return DetectedIde.CloudShell;
   }
-  if (process.env.PATH?.includes('vscodium')) {
-    return DetectedIde.VSCodium;
+  if (process.env.TERM_PRODUCT === 'Trae') {
+    return DetectedIde.Trae;
+  }
+  if (process.env.FIREBASE_DEPLOY_AGENT) {
+    return DetectedIde.FirebaseStudio;
   }
   if (process.env.TERM_PROGRAM === 'vscode') {
     return DetectedIde.VSCode;

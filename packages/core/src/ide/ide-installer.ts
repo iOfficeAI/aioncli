@@ -147,12 +147,22 @@ class VsCodeInstaller implements IdeInstaller {
   }
 }
 
-class DefaultIDEInstaller implements IdeInstaller {
+class OpenVSXInstaller implements IdeInstaller {
   async install(): Promise<InstallResult> {
-    return {
-      success: false,
-      message: `Auto-installation not supported. Install the extension directly through the marketplace.`,
-    };
+    const command = `npx ovsx get google.gemini-cli-vscode-ide-companion`;
+    try {
+      child_process.execSync(command, { stdio: 'pipe' });
+      return {
+        success: true,
+        message:
+          'VS Code companion extension was installed successfully from OpenVSX. Please restart your terminal to complete the setup.',
+      };
+    } catch (_error) {
+      return {
+        success: false,
+        message: `Failed to install VS Code companion extension from OpenVSX. Please try installing it manually.`,
+      };
+    }
   }
 }
 
@@ -161,6 +171,6 @@ export function getIdeInstaller(ide: DetectedIde): IdeInstaller | null {
     case DetectedIde.VSCode:
       return new VsCodeInstaller();
     default:
-      return new DefaultIDEInstaller();
+      return new OpenVSXInstaller();
   }
 }
