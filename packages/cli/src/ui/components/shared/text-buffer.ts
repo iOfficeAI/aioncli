@@ -1367,7 +1367,7 @@ export function useTextBuffer({
 
         potentialPath = potentialPath.trim();
         if (isValidPath(unescapePath(potentialPath))) {
-          ch = `@${potentialPath} `;
+          ch = `@${normlalizePath(potentialPath)} `;
         }
       }
 
@@ -2008,3 +2008,7 @@ export interface TextBuffer {
    */
   vimEscapeInsertMode: () => void;
 }
+function normlalizePath(potentialPath: string) {
+  throw new Error('Function not implemented.');
+}
+
