@@ -394,15 +394,15 @@ describe('Logger', () => {
     ];
 
     it.each([
-      { tag: 'test-tag', sanitizedTag: 'test-tag' },
-      { tag: 'invalid/?*!', sanitizedTag: 'invalid' },
-      { tag: '/?*!', sanitizedTag: 'default' },
-      { tag: '../../secret', sanitizedTag: 'secret' },
-    ])('should save a checkpoint', async ({ tag, sanitizedTag }) => {
+      { tag: 'test-tag' },
+      { tag: 'invalid/?*!' },
+      { tag: '/?*!' },
+      { tag: '../../secret' },
+    ])('should save a checkpoint', async ({ tag }) => {
       await logger.saveCheckpoint(conversation, tag);
       const taggedFilePath = path.join(
         TEST_GEMINI_DIR,
-        `checkpoint-${sanitizedTag}.json`,
+        `checkpoint-${Buffer.from(tag).toString('hex')}.json`,
       );
       const fileContent = await fs.readFile(taggedFilePath, 'utf-8');
       expect(JSON.parse(fileContent)).toEqual(conversation);
@@ -438,18 +438,18 @@ describe('Logger', () => {
     });
 
     it.each([
-      { tag: 'load-tag', sanitizedTag: 'load-tag' },
-      { tag: 'inv/load?*!', sanitizedTag: 'invload' },
-      { tag: '/?*!', sanitizedTag: 'default' },
-      { tag: '../../secret', sanitizedTag: 'secret' },
-    ])('should load from a checkpoint', async ({ tag, sanitizedTag }) => {
+      { tag: 'load-tag' },
+      { tag: 'inv/load?*!' },
+      { tag: '/?*!' },
+      { tag: '../../secret' },
+    ])('should load from a checkpoint', async ({ tag }) => {
       const taggedConversation = [
         ...conversation,
         { role: 'user', parts: [{ text: 'hello' }] },
       ];
       const taggedFilePath = path.join(
         TEST_GEMINI_DIR,
-        `checkpoint-${sanitizedTag}.json`,
+        `checkpoint-${Buffer.from(tag).toString('hex')}.json`,
       );
       await fs.writeFile(
         taggedFilePath,
