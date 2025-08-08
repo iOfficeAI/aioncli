@@ -231,7 +231,7 @@ export class Logger {
     }
   }
 
-  _checkpointPath(tag: string): string {
+  _checkpointPath(tag: string, sanitize = true): string {
     if (!tag.length) {
       throw new Error('No checkpoint tag specified.');
     }
@@ -239,11 +239,32 @@ export class Logger {
       throw new Error('Checkpoint file path not set.');
     }
     // Sanitize tag to prevent directory traversal attacks
-    let sanitizedTag = tag.replace(/[^a-zA-Z0-9-_]/g, '');
-    if (!sanitizedTag) {
-      sanitizedTag = 'default';
-    }
+    const sanitizedTag = sanitize ? Buffer.from(tag).toString('hex') : tag;
     return path.join(this.geminiDir, `checkpoint-${sanitizedTag}.json`);
+  }
+
+  async _findCheckpointPath(tag: string): Promise<string | undefined> {
+    const sanitizedPath = this._checkpointPath(tag);
+    try {
+      await fs.access(sanitizedPath);
+      return sanitizedPath;
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError.code === 'ENOENT') {
+        const unsanitizedPath = this._checkpointPath(tag, false);
+        try {
+          await fs.access(unsanitizedPath);
+          return unsanitizedPath;
+        } catch (e) {
+          const nodeError = e as NodeJS.ErrnoException;
+          if (nodeError.code === 'ENOENT') {
+            return undefined;
+          }
+          throw e;
+        }
+      }
+      throw error;
+    }
   }
 
   async saveCheckpoint(conversation: Content[], tag: string): Promise<void> {
@@ -269,7 +290,11 @@ export class Logger {
       return [];
     }
 
-    const path = this._checkpointPath(tag);
+    const path = await this._findCheckpointPath(tag);
+    if (!path) {
+      return [];
+    }
+
     try {
       const fileContent = await fs.readFile(path, 'utf-8');
       const parsedContent = JSON.parse(fileContent);
@@ -294,7 +319,10 @@ export class Logger {
       return false;
     }
 
-    const path = this._checkpointPath(tag);
+    const path = await this._findCheckpointPath(tag);
+    if (!path) {
+      return false;
+    }
 
     try {
       await fs.unlink(path);

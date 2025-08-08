@@ -37,8 +37,19 @@ const getSavedChatTags = async (
       if (file.startsWith(file_head) && file.endsWith(file_tail)) {
         const filePath = path.join(geminiDir, file);
         const stats = await fsPromises.stat(filePath);
+        const encodedName = file.slice(file_head.length, -file_tail.length);
+        let decodedName: string;
+        // A hex string must have an even number of characters and contain only hex characters.
+        if (
+          encodedName.length % 2 === 0 &&
+          /^[0-9a-fA-F]+$/.test(encodedName)
+        ) {
+          decodedName = Buffer.from(encodedName, 'hex').toString('utf-8');
+        } else {
+          decodedName = encodedName;
+        }
         chatDetails.push({
-          name: file.slice(file_head.length, -file_tail.length),
+          name: decodedName,
           mtime: stats.mtime,
         });
       }
