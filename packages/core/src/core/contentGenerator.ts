@@ -46,6 +46,7 @@ export enum AuthType {
   USE_GEMINI = 'gemini-api-key',
   USE_VERTEX_AI = 'vertex-ai',
   CLOUD_SHELL = 'cloud-shell',
+  USE_OPENAI = 'openai',
 }
 
 export type ContentGeneratorConfig = {
@@ -53,6 +54,19 @@ export type ContentGeneratorConfig = {
   apiKey?: string;
   vertexai?: boolean;
   authType?: AuthType | undefined;
+  // Timeout configuration in milliseconds
+  timeout?: number;
+  // Maximum retries for failed requests
+  maxRetries?: number;
+  samplingParams?: {
+    top_p?: number;
+    top_k?: number;
+    repetition_penalty?: number;
+    presence_penalty?: number;
+    frequency_penalty?: number;
+    temperature?: number;
+    max_tokens?: number;
+  };
   proxy?: string | undefined;
 };
 
@@ -143,6 +157,20 @@ export async function createContentGenerator(
       httpOptions,
     });
     return new LoggingContentGenerator(googleGenAI.models, gcConfig);
+  }
+
+  if (config.authType === AuthType.USE_OPENAI) {
+    if (!config.apiKey) {
+      throw new Error('OpenAI API key is required');
+    }
+
+    // Import OpenAIContentGenerator dynamically to avoid circular dependencies
+    const { OpenAIContentGenerator } = await import(
+      './openaiContentGenerator.js'
+    );
+
+    // Always use OpenAIContentGenerator, logging is controlled by enableOpenAILogging flag
+    return new OpenAIContentGenerator(config.apiKey, config.model, gcConfig);
   }
   throw new Error(
     `Error creating contentGenerator: Unsupported authType: ${config.authType}`,

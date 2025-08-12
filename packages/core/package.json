@@ -1,10 +1,13 @@
 {
-  "name": "@google/gemini-cli-core",
-  "version": "0.1.18",
+  "name": "@office-ai/aioncli-core",
+  "version": "0.1.18-beta.1",
   "description": "Gemini CLI Core",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/google-gemini/gemini-cli.git"
+    "url": "git+https://github.com/office-sec/aioncli.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "type": "module",
   "main": "dist/index.js",
@@ -45,10 +48,12 @@
     "micromatch": "^4.0.8",
     "mnemonist": "^0.40.3",
     "open": "^10.1.2",
+    "openai": "^5.12.2",
     "picomatch": "^4.0.1",
     "shell-quote": "^1.8.3",
     "simple-git": "^3.28.0",
     "strip-ansi": "^7.1.0",
+    "tiktoken": "^1.0.22",
     "undici": "^7.10.0",
     "ws": "^8.18.0"
   },
