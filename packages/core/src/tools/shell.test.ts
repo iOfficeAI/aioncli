@@ -25,6 +25,7 @@ vi.mock('../utils/summarizer.js');
 
 import { isCommandAllowed } from '../utils/shell-utils.js';
 import { ShellTool } from './shell.js';
+import { ToolErrorType } from './tool-error.js';
 import { type Config } from '../config/config.js';
 import {
   type ShellExecutionResult,
@@ -37,6 +38,7 @@ import * as crypto from 'crypto';
 import * as summarizer from '../utils/summarizer.js';
 import { ToolConfirmationOutcome } from './tools.js';
 import { OUTPUT_UPDATE_INTERVAL_MS } from './shell.js';
+import { createMockWorkspaceContext } from '../test-utils/mockWorkspaceContext.js';
 
 describe('ShellTool', () => {
   let shellTool: ShellTool;
@@ -53,6 +55,7 @@ describe('ShellTool', () => {
       getDebugMode: vi.fn().mockReturnValue(false),
       getTargetDir: vi.fn().mockReturnValue('/test/dir'),
       getSummarizeToolOutputConfig: vi.fn().mockReturnValue(undefined),
+      getWorkspaceContext: () => createMockWorkspaceContext('.'),
       getGeminiClient: vi.fn(),
     } as unknown as Config;
 
@@ -105,7 +108,7 @@ describe('ShellTool', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
       expect(
         shellTool.validateToolParams({ command: 'ls', directory: 'rel/path' }),
-      ).toBe('Directory must exist.');
+      ).toBe("Directory 'rel/path' is not a registered workspace directory.");
     });
   });
 
@@ -199,6 +202,42 @@ describe('ShellTool', () => {
       // The final llmContent should contain the user's command, not the wrapper
       expect(result.llmContent).toContain('Error: wrapped command failed');
       expect(result.llmContent).not.toContain('pgrep');
+    });
+
+    it('should return error with error property for invalid parameters', async () => {
+      const result = await shellTool.execute(
+        { command: '' }, // Empty command is invalid
+        mockAbortSignal,
+      );
+
+      expect(result.llmContent).toContain(
+        'Could not execute command due to invalid parameters:',
+      );
+      expect(result.returnDisplay).toBe('Command cannot be empty.');
+      expect(result.error).toEqual({
+        message: 'Command cannot be empty.',
+        type: ToolErrorType.INVALID_TOOL_PARAMS,
+      });
+    });
+
+    it('should return error with error property for invalid directory', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      const result = await shellTool.execute(
+        { command: 'ls', directory: 'nonexistent' },
+        mockAbortSignal,
+      );
+
+      expect(result.llmContent).toContain(
+        'Could not execute command due to invalid parameters:',
+      );
+      expect(result.returnDisplay).toBe(
+        "Directory 'nonexistent' is not a registered workspace directory.",
+      );
+      expect(result.error).toEqual({
+        message:
+          "Directory 'nonexistent' is not a registered workspace directory.",
+        type: ToolErrorType.INVALID_TOOL_PARAMS,
+      });
     });
 
     it('should summarize output when configured', async () => {
@@ -383,5 +422,39 @@ describe('ShellTool', () => {
       );
       expect(confirmation).toBe(false);
     });
+  });
+});
+
+describe('validateToolParams', () => {
+  it('should return null for valid directory', () => {
+    const config = {
+      getCoreTools: () => undefined,
+      getExcludeTools: () => undefined,
+      getTargetDir: () => '/root',
+      getWorkspaceContext: () =>
+        createMockWorkspaceContext('/root', ['/users/test']),
+    } as unknown as Config;
+    const shellTool = new ShellTool(config);
+    const result = shellTool.validateToolParams({
+      command: 'ls',
+      directory: 'test',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('should return error for directory outside workspace', () => {
+    const config = {
+      getCoreTools: () => undefined,
+      getExcludeTools: () => undefined,
+      getTargetDir: () => '/root',
+      getWorkspaceContext: () =>
+        createMockWorkspaceContext('/root', ['/users/test']),
+    } as unknown as Config;
+    const shellTool = new ShellTool(config);
+    const result = shellTool.validateToolParams({
+      command: 'ls',
+      directory: 'test2',
+    });
+    expect(result).toContain('is not a registered workspace directory');
   });
 });

@@ -61,6 +61,7 @@ export class LoopDetectionService {
   private contentStats = new Map<string, number[]>();
   private lastContentIndex = 0;
   private loopDetected = false;
+  private inCodeBlock = false;
 
   // LLM loop track tracking
   private turnsInCurrentPrompt = 0;
@@ -156,8 +157,33 @@ export class LoopDetectionService {
    * 2. Truncating history if it exceeds the maximum length
    * 3. Analyzing content chunks for repetitive patterns using hashing
    * 4. Detecting loops when identical chunks appear frequently within a short distance
+   * 5. Disabling loop detection within code blocks to prevent false positives,
+   *    as repetitive code structures are common and not necessarily loops.
    */
   private checkContentLoop(content: string): boolean {
+    // Different content elements can often contain repetitive syntax that is not indicative of a loop.
+    // To avoid false positives, we detect when we encounter different content types and
+    // reset tracking to avoid analyzing content that spans across different element boundaries.
+    const numFences = (content.match(/```/g) ?? []).length;
+    const hasTable = /(^|\n)\s*(\|.*\||[|+-]{3,})/.test(content);
+    const hasListItem =
+      /(^|\n)\s*[*-+]\s/.test(content) || /(^|\n)\s*\d+\.\s/.test(content);
+    const hasHeading = /(^|\n)#+\s/.test(content);
+    const hasBlockquote = /(^|\n)>\s/.test(content);
+
+    if (numFences || hasTable || hasListItem || hasHeading || hasBlockquote) {
+      // Reset tracking when different content elements are detected to avoid analyzing content
+      // that spans across different element boundaries.
+      this.resetContentTracking();
+    }
+
+    const wasInCodeBlock = this.inCodeBlock;
+    this.inCodeBlock =
+      numFences % 2 === 0 ? this.inCodeBlock : !this.inCodeBlock;
+    if (wasInCodeBlock) {
+      return false;
+    }
+
     this.streamContentHistory += content;
 
     this.truncateAndUpdate();

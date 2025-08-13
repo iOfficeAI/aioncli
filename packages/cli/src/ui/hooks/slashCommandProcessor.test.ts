@@ -4,15 +4,36 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+const { logSlashCommand, SlashCommandEvent } = vi.hoisted(() => ({
+  logSlashCommand: vi.fn(),
+  SlashCommandEvent: vi.fn((command, subCommand) => ({ command, subCommand })),
+}));
+
+vi.mock('@google/gemini-cli-core', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('@google/gemini-cli-core')>();
+  return {
+    ...original,
+    logSlashCommand,
+    SlashCommandEvent,
+    getIdeInstaller: vi.fn().mockReturnValue(null),
+  };
+});
+
 const { mockProcessExit } = vi.hoisted(() => ({
   mockProcessExit: vi.fn((_code?: number): never => undefined as never),
 }));
 
-vi.mock('node:process', () => ({
-  default: {
+vi.mock('node:process', () => {
+  const mockProcess = {
     exit: mockProcessExit,
-  },
-}));
+    platform: 'test-platform',
+  };
+  return {
+    ...mockProcess,
+    default: mockProcess,
+  };
+});
 
 const mockBuiltinLoadCommands = vi.fn();
 vi.mock('../../services/BuiltinCommandLoader.js', () => ({
@@ -37,6 +58,14 @@ vi.mock('../../services/McpPromptLoader.js', () => ({
 
 vi.mock('../contexts/SessionContext.js', () => ({
   useSessionStats: vi.fn(() => ({ stats: {} })),
+}));
+
+const { mockRunExitCleanup } = vi.hoisted(() => ({
+  mockRunExitCleanup: vi.fn(),
+}));
+
+vi.mock('../../utils/cleanup.js', () => ({
+  runExitCleanup: mockRunExitCleanup,
 }));
 
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -69,16 +98,18 @@ describe('useSlashCommandProcessor', () => {
   const mockAddItem = vi.fn();
   const mockClearItems = vi.fn();
   const mockLoadHistory = vi.fn();
-  const mockSetShowHelp = vi.fn();
+  const mockOpenThemeDialog = vi.fn();
   const mockOpenAuthDialog = vi.fn();
   const mockSetQuittingMessages = vi.fn();
 
   const mockConfig = {
-    getProjectRoot: () => '/mock/cwd',
-    getSessionId: () => 'test-session',
-    getGeminiClient: () => ({
+    getProjectRoot: vi.fn(() => '/mock/cwd'),
+    getSessionId: vi.fn(() => 'test-session'),
+    getGeminiClient: vi.fn(() => ({
       setHistory: vi.fn().mockResolvedValue(undefined),
-    }),
+    })),
+    getExtensions: vi.fn(() => []),
+    getIdeMode: vi.fn(() => false),
   } as unknown as Config;
 
   const mockSettings = {} as LoadedSettings;
@@ -109,14 +140,14 @@ describe('useSlashCommandProcessor', () => {
         mockClearItems,
         mockLoadHistory,
         vi.fn(), // refreshStatic
-        mockSetShowHelp,
         vi.fn(), // onDebugMessage
-        vi.fn(), // openThemeDialog
+        mockOpenThemeDialog, // openThemeDialog
         mockOpenAuthDialog,
         vi.fn(), // openEditorDialog
         vi.fn(), // toggleCorgiMode
         mockSetQuittingMessages,
         vi.fn(), // openPrivacyNotice
+        vi.fn(), // openSettingsDialog
         vi.fn(), // toggleVimEnabled
         setIsProcessing,
       ),
@@ -311,19 +342,19 @@ describe('useSlashCommandProcessor', () => {
   });
 
   describe('Action Result Handling', () => {
-    it('should handle "dialog: help" action', async () => {
+    it('should handle "dialog: theme" action', async () => {
       const command = createTestCommand({
-        name: 'helpcmd',
-        action: vi.fn().mockResolvedValue({ type: 'dialog', dialog: 'help' }),
+        name: 'themecmd',
+        action: vi.fn().mockResolvedValue({ type: 'dialog', dialog: 'theme' }),
       });
       const result = setupProcessorHook([command]);
       await waitFor(() => expect(result.current.slashCommands).toHaveLength(1));
 
       await act(async () => {
-        await result.current.handleSlashCommand('/helpcmd');
+        await result.current.handleSlashCommand('/themecmd');
       });
 
-      expect(mockSetShowHelp).toHaveBeenCalledWith(true);
+      expect(mockOpenThemeDialog).toHaveBeenCalled();
     });
 
     it('should handle "load_history" action', async () => {
@@ -379,6 +410,37 @@ describe('useSlashCommandProcessor', () => {
 
           expect(mockSetQuittingMessages).toHaveBeenCalledWith([]);
           expect(mockProcessExit).toHaveBeenCalledWith(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('should call runExitCleanup when handling a "quit" action', async () => {
+        const quitAction = vi
+          .fn()
+          .mockResolvedValue({ type: 'quit', messages: [] });
+        const command = createTestCommand({
+          name: 'exit',
+          action: quitAction,
+        });
+        const result = setupProcessorHook([command]);
+
+        await waitFor(() =>
+          expect(result.current.slashCommands).toHaveLength(1),
+        );
+
+        vi.useFakeTimers();
+
+        try {
+          await act(async () => {
+            await result.current.handleSlashCommand('/exit');
+          });
+
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(200);
+          });
+
+          expect(mockRunExitCleanup).toHaveBeenCalledTimes(1);
         } finally {
           vi.useRealTimers();
         }
@@ -796,21 +858,103 @@ describe('useSlashCommandProcessor', () => {
           mockClearItems,
           mockLoadHistory,
           vi.fn(), // refreshStatic
-          mockSetShowHelp,
           vi.fn(), // onDebugMessage
           vi.fn(), // openThemeDialog
           mockOpenAuthDialog,
-          vi.fn(), // openEditorDialog,
+          vi.fn(), // openEditorDialog
           vi.fn(), // toggleCorgiMode
           mockSetQuittingMessages,
           vi.fn(), // openPrivacyNotice
+
+          vi.fn(), // openSettingsDialog
           vi.fn(), // toggleVimEnabled
+          vi.fn().mockResolvedValue(false), // toggleVimEnabled
+          vi.fn(), // setIsProcessing
         ),
       );
 
       unmount();
 
       expect(abortSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Slash Command Logging', () => {
+    const mockCommandAction = vi.fn().mockResolvedValue({ type: 'handled' });
+    const loggingTestCommands: SlashCommand[] = [
+      createTestCommand({
+        name: 'logtest',
+        action: mockCommandAction,
+      }),
+      createTestCommand({
+        name: 'logwithsub',
+        subCommands: [
+          createTestCommand({
+            name: 'sub',
+            action: mockCommandAction,
+          }),
+        ],
+      }),
+      createTestCommand({
+        name: 'logalias',
+        altNames: ['la'],
+        action: mockCommandAction,
+      }),
+    ];
+
+    beforeEach(() => {
+      mockCommandAction.mockClear();
+      vi.mocked(logSlashCommand).mockClear();
+      vi.mocked(SlashCommandEvent).mockClear();
+    });
+
+    it('should log a simple slash command', async () => {
+      const result = setupProcessorHook(loggingTestCommands);
+      await waitFor(() =>
+        expect(result.current.slashCommands.length).toBeGreaterThan(0),
+      );
+      await act(async () => {
+        await result.current.handleSlashCommand('/logtest');
+      });
+
+      expect(logSlashCommand).toHaveBeenCalledTimes(1);
+      expect(SlashCommandEvent).toHaveBeenCalledWith('logtest', undefined);
+    });
+
+    it('should log a slash command with a subcommand', async () => {
+      const result = setupProcessorHook(loggingTestCommands);
+      await waitFor(() =>
+        expect(result.current.slashCommands.length).toBeGreaterThan(0),
+      );
+      await act(async () => {
+        await result.current.handleSlashCommand('/logwithsub sub');
+      });
+
+      expect(logSlashCommand).toHaveBeenCalledTimes(1);
+      expect(SlashCommandEvent).toHaveBeenCalledWith('logwithsub', 'sub');
+    });
+
+    it('should log the command path when an alias is used', async () => {
+      const result = setupProcessorHook(loggingTestCommands);
+      await waitFor(() =>
+        expect(result.current.slashCommands.length).toBeGreaterThan(0),
+      );
+      await act(async () => {
+        await result.current.handleSlashCommand('/la');
+      });
+      expect(logSlashCommand).toHaveBeenCalledTimes(1);
+      expect(SlashCommandEvent).toHaveBeenCalledWith('logalias', undefined);
+    });
+
+    it('should not log for unknown commands', async () => {
+      const result = setupProcessorHook(loggingTestCommands);
+      await waitFor(() =>
+        expect(result.current.slashCommands.length).toBeGreaterThan(0),
+      );
+      await act(async () => {
+        await result.current.handleSlashCommand('/unknown');
+      });
+      expect(logSlashCommand).not.toHaveBeenCalled();
     });
   });
 });
