@@ -641,7 +641,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
     try {
       const embedding = await this.client.embeddings.create({
-        model: 'text-embedding-ada-002', // Default embedding model
+        model: request.model || 'text-embedding-ada-002',
         input: text,
       });
 
