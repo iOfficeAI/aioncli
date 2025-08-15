@@ -1,6 +1,6 @@
 {
   "name": "@office-ai/aioncli-core",
-  "version": "0.1.18-beta.2",
+  "version": "0.1.18-beta.7",
   "description": "Gemini CLI Core",
   "repository": {
     "type": "git",
@@ -47,6 +47,7 @@
     "marked": "^15.0.12",
     "micromatch": "^4.0.8",
     "mnemonist": "^0.40.3",
+    "node-fetch": "^3.3.2",
     "open": "^10.1.2",
     "openai": "^5.12.2",
     "picomatch": "^4.0.1",
@@ -63,6 +64,7 @@
     "@types/dotenv": "^6.1.1",
     "@types/micromatch": "^4.0.8",
     "@types/minimatch": "^5.1.2",
+    "@types/node-fetch": "^2.6.13",
     "@types/picomatch": "^4.0.1",
     "@types/ws": "^8.5.10",
     "typescript": "^5.3.3",

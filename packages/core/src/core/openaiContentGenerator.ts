@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Qwen
+ * Copyright 2025 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -123,8 +123,8 @@ export class OpenAIContentGenerator implements ContentGenerator {
       'User-Agent': userAgent,
       ...(isOpenRouter
         ? {
-            'HTTP-Referer': 'https://github.com/QwenLM/qwen-code.git',
-            'X-Title': 'Qwen Code',
+            'HTTP-Referer': 'https://aionui.com',
+            'X-Title': 'AionUi',
           }
         : {}),
     };

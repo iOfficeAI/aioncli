@@ -27,6 +27,8 @@ import {
 } from '../utils/user_account.js';
 import { AuthType } from '../core/contentGenerator.js';
 import readline from 'node:readline';
+import fetch from 'node-fetch';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 //  OAuth Client ID used to initiate OAuth2Client class.
 const OAUTH_CLIENT_ID =
@@ -46,7 +48,6 @@ const OAUTH_SCOPE = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
 ];
-
 const HTTP_REDIRECT = 301;
 const SIGN_IN_SUCCESS_URL =
   'https://developers.google.com/gemini-code-assist/auth_success_gemini';
@@ -70,11 +71,12 @@ export async function getOauthClient(
   authType: AuthType,
   config: Config,
 ): Promise<OAuth2Client> {
+  const proxy = config.getProxy();
   const client = new OAuth2Client({
     clientId: OAUTH_CLIENT_ID,
     clientSecret: OAUTH_CLIENT_SECRET,
     transporterOptions: {
-      proxy: config.getProxy(),
+      proxy,
     },
   });
 
@@ -85,7 +87,7 @@ export async function getOauthClient(
     client.setCredentials({
       access_token: process.env.GOOGLE_CLOUD_ACCESS_TOKEN,
     });
-    await fetchAndCacheUserInfo(client);
+    await fetchAndCacheUserInfo(client, proxy);
     return client;
   }
 
@@ -99,7 +101,7 @@ export async function getOauthClient(
     // Check if we need to retrieve Google Account ID or Email
     if (!getCachedGoogleAccount()) {
       try {
-        await fetchAndCacheUserInfo(client);
+        await fetchAndCacheUserInfo(client, proxy);
       } catch {
         // Non-fatal, continue with existing auth.
       }
@@ -148,7 +150,7 @@ export async function getOauthClient(
       process.exit(1);
     }
   } else {
-    const webLogin = await authWithWeb(client);
+    const webLogin = await authWithWeb(client, proxy);
 
     console.log(
       `\n\nCode Assist login required.\n` +
@@ -233,7 +235,10 @@ async function authWithUserCode(client: OAuth2Client): Promise<boolean> {
   return true;
 }
 
-async function authWithWeb(client: OAuth2Client): Promise<OauthWebLogin> {
+async function authWithWeb(
+  client: OAuth2Client,
+  proxy?: string,
+): Promise<OauthWebLogin> {
   const port = await getAvailablePort();
   // The hostname used for the HTTP server binding (e.g., '0.0.0.0' in Docker).
   const host = process.env.OAUTH_CALLBACK_HOST || 'localhost';
@@ -277,7 +282,7 @@ async function authWithWeb(client: OAuth2Client): Promise<OauthWebLogin> {
           client.setCredentials(tokens);
           // Retrieve and cache Google Account ID during authentication
           try {
-            await fetchAndCacheUserInfo(client);
+            await fetchAndCacheUserInfo(client, proxy);
           } catch (error) {
             console.error(
               'Failed to retrieve Google Account ID during authentication:',
@@ -383,7 +388,10 @@ export async function clearCachedCredentialFile() {
   }
 }
 
-async function fetchAndCacheUserInfo(client: OAuth2Client): Promise<void> {
+async function fetchAndCacheUserInfo(
+  client: OAuth2Client,
+  proxy?: string,
+): Promise<{ email: string } | void> {
   try {
     const { token } = await client.getAccessToken();
     if (!token) {
@@ -396,6 +404,7 @@ async function fetchAndCacheUserInfo(client: OAuth2Client): Promise<void> {
         headers: {
           Authorization: `Bearer ${token}`,
         },
+        agent: proxy ? new HttpsProxyAgent(proxy) : undefined,
       },
     );
 
@@ -408,11 +417,52 @@ async function fetchAndCacheUserInfo(client: OAuth2Client): Promise<void> {
       return;
     }
 
-    const userInfo = await response.json();
+    const userInfo = (await response.json()) as { email: string };
     if (userInfo.email) {
       await cacheGoogleAccount(userInfo.email);
     }
+    return userInfo;
   } catch (error) {
     console.error('Error retrieving user info:', error);
   }
 }
+
+export async function getOauthInfoWithCache(
+  proxy: string,
+): Promise<{ email: string } | void> {
+  const client = new OAuth2Client({
+    clientId: OAUTH_CLIENT_ID,
+    clientSecret: OAUTH_CLIENT_SECRET,
+    transporterOptions: {
+      proxy,
+    },
+  });
+
+  if (
+    process.env.GOOGLE_GENAI_USE_GCA &&
+    process.env.GOOGLE_CLOUD_ACCESS_TOKEN
+  ) {
+    client.setCredentials({
+      access_token: process.env.GOOGLE_CLOUD_ACCESS_TOKEN,
+    });
+    return fetchAndCacheUserInfo(client, proxy);
+  }
+
+  client.on('tokens', async (tokens: Credentials) => {
+    await cacheCredentials(tokens);
+  });
+
+  // If there are cached creds on disk, they always take precedence
+  if (await loadCachedCredentials(client)) {
+    // Found valid cached credentials.
+    // Check if we need to retrieve Google Account ID or Email
+    const cachedGoogleAccount = getCachedGoogleAccount();
+    if (!cachedGoogleAccount) {
+      return fetchAndCacheUserInfo(client, proxy);
+    }
+    console.log('Loaded cached credentials.', cachedGoogleAccount);
+    return { email: cachedGoogleAccount };
+  }
+}
+
+export const loginWithOauth = getOauthClient;
