@@ -417,11 +417,11 @@ async function fetchAndCacheUserInfo(
       return;
     }
 
-    const userInfo = (await response.json()) as { email: string };
+    const userInfo = (await response.json()) as { email?: string };
     if (userInfo.email) {
       await cacheGoogleAccount(userInfo.email);
+      return { email: userInfo.email };
     }
-    return userInfo;
   } catch (error) {
     console.error('Error retrieving user info:', error);
   }
