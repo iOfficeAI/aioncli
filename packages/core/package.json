@@ -1,6 +1,6 @@
 {
   "name": "@office-ai/aioncli-core",
-  "version": "0.1.18-beta.7",
+  "version": "0.1.19",
   "description": "Gemini CLI Core",
   "repository": {
     "type": "git",
