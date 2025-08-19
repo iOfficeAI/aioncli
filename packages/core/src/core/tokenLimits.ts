@@ -100,6 +100,8 @@ export function tokenLimit(model: Model): TokenCount {
     // Modelscope
     case 'Qwen3-Coder-480B-A35B-Instruct':
       return 262_144;
+    case 'moonshotai/Kimi-K2-Instruct':
+      return 128_000;
 
     default:
       return DEFAULT_TOKEN_LIMIT;
