@@ -104,6 +104,9 @@ export function tokenLimit(model: Model): TokenCount {
       return 128_000;
 
     default:
+      if (!model.includes('gemini')) {
+        return 128_000;
+      }
       return DEFAULT_TOKEN_LIMIT;
   }
 }
