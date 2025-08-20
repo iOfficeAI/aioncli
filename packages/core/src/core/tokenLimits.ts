@@ -26,7 +26,7 @@ export function tokenLimit(model: Model): TokenCount {
       return 1_048_576;
     case 'gemini-2.0-flash-preview-image-generation':
       return 32_000;
-    
+
     // OpenAI GPT-4 models
     case 'gpt-4':
     case 'gpt-4-0613':
@@ -51,7 +51,7 @@ export function tokenLimit(model: Model): TokenCount {
     case 'gpt-4o-mini':
     case 'gpt-4o-mini-2024-07-18':
       return 128_000;
-    
+
     // OpenAI GPT-3.5 models
     case 'gpt-3.5-turbo':
     case 'gpt-3.5-turbo-0125':
@@ -61,19 +61,19 @@ export function tokenLimit(model: Model): TokenCount {
     case 'gpt-3.5-turbo-16k':
     case 'gpt-3.5-turbo-16k-0613':
       return 16_385;
-    
+
     // OpenAI o1 models
     case 'o1-preview':
     case 'o1-preview-2024-09-12':
     case 'o1-mini':
     case 'o1-mini-2024-09-12':
       return 128_000;
-    
+
     // OpenAI oss
     case 'gpt-oss-120b':
     case 'gpt-oss-20b':
       return 131_000;
-    
+
     // Claude models (for Anthropic API compatibility)
     case 'claude-opus-4-1-20250805':
     case 'claude-opus-4-20250514':
@@ -96,7 +96,7 @@ export function tokenLimit(model: Model): TokenCount {
       return 32_768;
     case 'moonshotai/kimi-k2':
       return 63_000;
-    
+
     // Modelscope
     case 'Qwen3-Coder-480B-A35B-Instruct':
       return 262_144;
