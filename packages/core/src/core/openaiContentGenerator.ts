@@ -210,6 +210,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
         },
       };
 
+      // Enable store for GPT-5 and GPT-4o models when using metadata
+      const modelName = this.model.toLowerCase();
+      if (modelName.includes('gpt-') || 
+          modelName.includes('gpt5') || 
+          modelName.includes('gpt4')) {
+        createParams.store = true;
+      }
+
       if (request.config?.tools) {
         createParams.tools = await this.convertGeminiToolsToOpenAI(
           request.config.tools,
@@ -328,6 +336,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
           promptId: userPromptId,
         },
       };
+
+      // Enable store for GPT-5 and GPT-4 models when using metadata
+      const modelNameStream = this.model.toLowerCase();
+      if (modelNameStream.includes('gpt-') || 
+          modelNameStream.includes('gpt5') || 
+          modelNameStream.includes('gpt4')) {
+        createParams.store = true;
+      }
 
       if (request.config?.tools) {
         createParams.tools = await this.convertGeminiToolsToOpenAI(
@@ -1383,6 +1399,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
         ? { frequency_penalty: configSamplingParams.frequency_penalty }
         : {}),
     };
+
+    // Force temperature to 1 for GPT-5 and GPT-4o models if temperature is present
+    const modelName = this.model.toLowerCase();
+    if ((modelName.includes('gpt-5') || modelName.includes('gpt5') || 
+         modelName.includes('gpt-4o') || modelName.includes('gpt4o')) && 
+        params.temperature !== undefined) {
+      params.temperature = 1.0;
+    }
 
     return params;
   }
