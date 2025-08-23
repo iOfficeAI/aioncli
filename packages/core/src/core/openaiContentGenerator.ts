@@ -161,8 +161,8 @@ export class OpenAIContentGenerator implements ContentGenerator {
     // Include metadata for OpenAI official API and compatible endpoints
     // Exclude for providers that don't support metadata (like GLM, Claude, etc.)
     return (
-      baseURL.includes('https://api.openai.com') ||
-      baseURL.includes('https://dashscope.aliyuncs.com')
+      baseURL.includes('https://api.openai.com/') ||
+      baseURL.includes('https://dashscope.aliyuncs.com/')
     );
   }
 
