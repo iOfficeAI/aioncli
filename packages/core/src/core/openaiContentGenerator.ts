@@ -152,6 +152,40 @@ export class OpenAIContentGenerator implements ContentGenerator {
   }
 
   /**
+   * Check if metadata should be included in the request
+   * Only include metadata for specific providers that support it
+   */
+  private shouldIncludeMetadata(): boolean {
+    const baseURL = this.client?.baseURL || '';
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(baseURL).hostname;
+    } catch (_e) {
+      return false;
+    }
+    return (
+      hostname === 'api.openai.com' ||
+      hostname === 'dashscope.aliyuncs.com'
+    );
+  }
+
+  /**
+   * Build metadata object conditionally
+   * @param userPromptId The prompt ID for this request
+   * @returns metadata object if should be included, undefined otherwise
+   */
+  private buildMetadata(userPromptId: string): Record<string, string> | undefined {
+    if (!this.shouldIncludeMetadata()) {
+      return undefined;
+    }
+    
+    return {
+      sessionId: this.config.getSessionId?.() || '',
+      promptId: userPromptId,
+    };
+  }
+
+  /**
    * Check if an error is a timeout error
    */
   private isTimeoutError(error: unknown): boolean {
@@ -198,16 +232,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
       // 3. Default values (lowest priority)
       const samplingParams = this.buildSamplingParameters(request);
 
+      const metadata = this.buildMetadata(userPromptId);
       const createParams: Parameters<
         typeof this.client.chat.completions.create
       >[0] = {
         model: this.model,
         messages,
         ...samplingParams,
-        metadata: {
-          sessionId: this.config.getSessionId?.(),
-          promptId: userPromptId,
-        },
+        ...(metadata && { metadata }),
       };
 
       // Enable store for GPT-5 and GPT-4o models when using metadata
@@ -323,6 +355,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       // Build sampling parameters with clear priority
       const samplingParams = this.buildSamplingParameters(request);
 
+      const metadata = this.buildMetadata(userPromptId);
       const createParams: Parameters<
         typeof this.client.chat.completions.create
       >[0] = {
@@ -331,10 +364,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         ...samplingParams,
         stream: true,
         stream_options: { include_usage: true },
-        metadata: {
-          sessionId: this.config.getSessionId?.(),
-          promptId: userPromptId,
-        },
+        ...(metadata && { metadata }),
       };
 
       // Enable store for GPT-5 and GPT-4 models when using metadata
@@ -1131,7 +1161,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
   private convertToGeminiFormat(
     openaiResponse: OpenAI.Chat.ChatCompletion,
   ): GenerateContentResponse {
-    const choice: any = openaiResponse.choices[0];
+    const choice = openaiResponse.choices[0];
     const response = new GenerateContentResponse();
 
     const parts: Part[] = [];
