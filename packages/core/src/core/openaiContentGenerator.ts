@@ -157,12 +157,15 @@ export class OpenAIContentGenerator implements ContentGenerator {
    */
   private shouldIncludeMetadata(): boolean {
     const baseURL = this.client?.baseURL || '';
-    
-    // Include metadata for OpenAI official API and compatible endpoints
-    // Exclude for providers that don't support metadata (like GLM, Claude, etc.)
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(baseURL).hostname;
+    } catch (e) {
+      return false;
+    }
     return (
-      baseURL.includes('https://api.openai.com/') ||
-      baseURL.includes('https://dashscope.aliyuncs.com/')
+      hostname === 'api.openai.com' ||
+      hostname === 'dashscope.aliyuncs.com'
     );
   }
 
