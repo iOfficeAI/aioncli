@@ -160,7 +160,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     let hostname: string | undefined;
     try {
       hostname = new URL(baseURL).hostname;
-    } catch (e) {
+    } catch (_e) {
       return false;
     }
     return (
@@ -1161,7 +1161,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
   private convertToGeminiFormat(
     openaiResponse: OpenAI.Chat.ChatCompletion,
   ): GenerateContentResponse {
-    const choice: any = openaiResponse.choices[0];
+    const choice = openaiResponse.choices[0];
     const response = new GenerateContentResponse();
 
     const parts: Part[] = [];
