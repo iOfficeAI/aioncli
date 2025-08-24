@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2025 QWEN
  * SPDX-License-Identifier: Apache-2.0
  */
 

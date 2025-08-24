@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2025 QWEN
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -25,6 +25,7 @@ import OpenAI from 'openai';
 import { logApiResponse } from '../telemetry/loggers.js';
 import { ApiResponseEvent } from '../telemetry/types.js';
 import { Config } from '../config/config.js';
+import { safeJsonParse } from '../utils/safeJsonParse.js';
 
 // OpenAI API type definitions for logging
 interface OpenAIToolCall {
@@ -1177,12 +1178,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         if (toolCall.function) {
           let args: Record<string, unknown> = {};
           if (toolCall.function.arguments) {
-            try {
-              args = JSON.parse(toolCall.function.arguments);
-            } catch (error) {
-              console.error('Failed to parse function arguments:', error);
-              args = {};
-            }
+            args = safeJsonParse(toolCall.function.arguments, {});
           }
 
           parts.push({
@@ -1294,14 +1290,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
           if (accumulatedCall.name) {
             let args: Record<string, unknown> = {};
             if (accumulatedCall.arguments) {
-              try {
-                args = JSON.parse(accumulatedCall.arguments);
-              } catch (error) {
-                console.error(
-                  'Failed to parse final tool call arguments:',
-                  error,
-                );
-              }
+              args = safeJsonParse(accumulatedCall.arguments, {});
             }
 
             parts.push({
