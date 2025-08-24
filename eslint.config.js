@@ -155,6 +155,7 @@ export default tseslint.config(
   },
   {
     files: ['./**/*.{tsx,ts,js}'],
+    ignores: ['packages/core/src/core/openaiContentGenerator.ts', 'packages/core/src/core/openaiContentGenerator.test.ts'],
     plugins: {
       'license-header': licenseHeader,
     },
