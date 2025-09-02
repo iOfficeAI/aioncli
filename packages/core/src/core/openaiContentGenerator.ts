@@ -92,7 +92,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
   constructor(apiKey: string, model: string, config: Config) {
     this.model = model;
     this.config = config;
-    const baseURL = process.env.OPENAI_BASE_URL || '';
+    const baseURL = process.env['OPENAI_BASE_URL'] || '';
 
     // Configure timeout settings - using progressive timeouts
     const timeoutConfig = {
@@ -114,7 +114,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     }
 
     // Set up User-Agent header (same format as contentGenerator.ts)
-    const version = process.env.CLI_VERSION || process.version;
+    const version = process.env['CLI_VERSION'] || process.version;
     const userAgent = `QwenCode/${version} (${process.platform}; ${process.arch})`;
 
     // Check if using OpenRouter and add required headers

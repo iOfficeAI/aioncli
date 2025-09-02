@@ -463,11 +463,11 @@ export async function getOauthInfoWithCache(
   });
 
   if (
-    process.env.GOOGLE_GENAI_USE_GCA &&
-    process.env.GOOGLE_CLOUD_ACCESS_TOKEN
+    process.env['GOOGLE_GENAI_USE_GCA'] &&
+    process.env['GOOGLE_CLOUD_ACCESS_TOKEN']
   ) {
     client.setCredentials({
-      access_token: process.env.GOOGLE_CLOUD_ACCESS_TOKEN,
+      access_token: process.env['GOOGLE_CLOUD_ACCESS_TOKEN'],
     });
     return fetchAndCacheUserInfo(client, proxy);
   }

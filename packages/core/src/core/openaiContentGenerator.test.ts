@@ -641,7 +641,7 @@ describe('OpenAIContentGenerator', () => {
         model: 'text-embedding-ada-002',
       };
 
-      const _result = await generator.embedContent(request);
+      await generator.embedContent(request);
 
       expect(mockOpenAIClient.embeddings.create).toHaveBeenCalledWith({
         model: 'text-embedding-ada-002',
@@ -1491,7 +1491,7 @@ describe('OpenAIContentGenerator', () => {
   describe('error suppression functionality', () => {
     it('should allow subclasses to suppress error logging', async () => {
       class TestGenerator extends OpenAIContentGenerator {
-        protected shouldSuppressErrorLogging(): boolean {
+        protected override shouldSuppressErrorLogging(): boolean {
           return true; // Always suppress for this test
         }
       }
