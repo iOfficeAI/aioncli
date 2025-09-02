@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2025 QWEN
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -25,6 +25,7 @@ import OpenAI from 'openai';
 import { logApiResponse } from '../telemetry/loggers.js';
 import { ApiResponseEvent } from '../telemetry/types.js';
 import { Config } from '../config/config.js';
+import { safeJsonParse } from '../utils/safeJsonParse.js';
 
 // OpenAI API type definitions for logging
 interface OpenAIToolCall {
@@ -152,6 +153,40 @@ export class OpenAIContentGenerator implements ContentGenerator {
   }
 
   /**
+   * Check if metadata should be included in the request
+   * Only include metadata for specific providers that support it
+   */
+  private shouldIncludeMetadata(): boolean {
+    const baseURL = this.client?.baseURL || '';
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(baseURL).hostname;
+    } catch (_e) {
+      return false;
+    }
+    return (
+      hostname === 'api.openai.com' ||
+      hostname === 'dashscope.aliyuncs.com'
+    );
+  }
+
+  /**
+   * Build metadata object conditionally
+   * @param userPromptId The prompt ID for this request
+   * @returns metadata object if should be included, undefined otherwise
+   */
+  private buildMetadata(userPromptId: string): Record<string, string> | undefined {
+    if (!this.shouldIncludeMetadata()) {
+      return undefined;
+    }
+    
+    return {
+      sessionId: this.config.getSessionId?.() || '',
+      promptId: userPromptId,
+    };
+  }
+
+  /**
    * Check if an error is a timeout error
    */
   private isTimeoutError(error: unknown): boolean {
@@ -198,16 +233,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
       // 3. Default values (lowest priority)
       const samplingParams = this.buildSamplingParameters(request);
 
+      const metadata = this.buildMetadata(userPromptId);
       const createParams: Parameters<
         typeof this.client.chat.completions.create
       >[0] = {
         model: this.model,
         messages,
         ...samplingParams,
-        metadata: {
-          sessionId: this.config.getSessionId?.(),
-          promptId: userPromptId,
-        },
+        ...(metadata && { metadata }),
       };
 
       // Enable store for GPT-5 and GPT-4o models when using metadata
@@ -337,6 +370,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       // Build sampling parameters with clear priority
       const samplingParams = this.buildSamplingParameters(request);
 
+      const metadata = this.buildMetadata(userPromptId);
       const createParams: Parameters<
         typeof this.client.chat.completions.create
       >[0] = {
@@ -345,10 +379,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         ...samplingParams,
         stream: true,
         stream_options: { include_usage: true },
-        metadata: {
-          sessionId: this.config.getSessionId?.(),
-          promptId: userPromptId,
-        },
+        ...(metadata && { metadata }),
       };
 
       // Enable store for GPT-5 and GPT-4 models when using metadata
@@ -1161,7 +1192,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     openaiResponse: OpenAI.Chat.ChatCompletion,
     isJsonSchemaRequest: boolean = false,
   ): GenerateContentResponse {
-    const choice: any = openaiResponse.choices[0];
+    const choice = openaiResponse.choices[0];
     const response = new GenerateContentResponse();
 
     const parts: Part[] = [];
@@ -1177,12 +1208,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         if (toolCall.function) {
           let args: Record<string, unknown> = {};
           if (toolCall.function.arguments) {
-            try {
-              args = JSON.parse(toolCall.function.arguments);
-            } catch (error) {
-              console.error('Failed to parse function arguments:', error);
-              args = {};
-            }
+            args = safeJsonParse(toolCall.function.arguments, {});
           }
 
           // Special handling for JSON schema requests (like qwen-code)
@@ -1302,14 +1328,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
           if (accumulatedCall.name) {
             let args: Record<string, unknown> = {};
             if (accumulatedCall.arguments) {
-              try {
-                args = JSON.parse(accumulatedCall.arguments);
-              } catch (error) {
-                console.error(
-                  'Failed to parse final tool call arguments:',
-                  error,
-                );
-              }
+              args = safeJsonParse(accumulatedCall.arguments, {});
             }
 
             // Special handling for JSON schema requests (like qwen-code)

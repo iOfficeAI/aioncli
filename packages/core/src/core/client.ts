@@ -11,6 +11,8 @@ import {
   Content,
   Tool,
   GenerateContentResponse,
+  FunctionDeclaration,
+  Schema,
 } from '@google/genai';
 import {
   getDirectoryContextString,
@@ -25,7 +27,7 @@ import {
 import { Config } from '../config/config.js';
 import { UserTierId } from '../code_assist/types.js';
 import { getCoreSystemPrompt, getCompressionPrompt } from './prompts.js';
-import { getResponseText } from '../utils/generateContentResponseUtilities.js';
+import { getResponseText, getFunctionCalls } from '../utils/generateContentResponseUtilities.js';
 import { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
 import { reportError } from '../utils/errorReporting.js';
 import { GeminiChat } from './geminiChat.js';
@@ -570,6 +572,13 @@ export class GeminiClient {
     // Use current model from config instead of hardcoded Flash model
     const modelToUse =
       model || this.config.getModel() || DEFAULT_GEMINI_FLASH_MODEL;
+    
+    // If using OpenAI authType, use OpenAI implementation
+    console.log("my generateJson",this.config.getContentGeneratorConfig()?.authType,modelToUse)    
+    if (this.config.getContentGeneratorConfig()?.authType === AuthType.USE_OPENAI) {
+      return this.openaiGenerateJson(contents, schema, abortSignal, modelToUse, config);
+    }
+    
     try {
       const userMemory = this.config.getUserMemory();
       const systemInstruction = getCoreSystemPrompt(userMemory);
@@ -661,6 +670,127 @@ export class GeminiClient {
         'Error generating JSON content via API.',
         contents,
         'generateJson-api',
+      );
+      throw new Error(
+        `Failed to generate JSON content: ${getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  async openaiGenerateJson(
+    contents: Content[],
+    schema: SchemaUnion,
+    abortSignal: AbortSignal,
+    model: string,
+    config: GenerateContentConfig = {},
+  ): Promise<Record<string, unknown>> {
+    try {
+      const userMemory = this.config.getUserMemory();
+      const systemInstruction = getCoreSystemPrompt(userMemory);
+      const requestConfig = {
+        abortSignal,
+        ...this.generateContentConfig,
+        ...config,
+      };
+
+      // Create function declaration for OpenAI-style response
+      const functionDeclaration: FunctionDeclaration = {
+        name: 'respond_in_schema',
+        description: 'Provide the response in provided schema',
+        parameters: schema as Schema,
+      };
+
+      const tools: Tool[] = [
+        {
+          functionDeclarations: [functionDeclaration],
+        },
+      ];
+
+      const apiCall = () =>
+        this.getContentGenerator().generateContent(
+          {
+            model,
+            config: {
+              ...requestConfig,
+              systemInstruction,
+              tools,
+            },
+            contents,
+          },
+          this.lastPromptId,
+        );
+
+      const result = await retryWithBackoff(apiCall, {
+        onPersistent429: async (authType?: string, error?: unknown) =>
+          await this.handleFlashFallback(authType, error),
+        authType: this.config.getContentGeneratorConfig()?.authType,
+      });
+
+      // Try to extract function call arguments
+      const functionCalls = getFunctionCalls(result);
+
+      if (functionCalls && functionCalls.length > 0) {
+        const functionCall = functionCalls.find(
+          (call) => call.name === 'respond_in_schema',
+        );
+        if (functionCall && functionCall.args) {
+          return functionCall.args;
+        }
+      }
+
+      // Fallback: try to parse response text as JSON
+      let text = getResponseText(result);
+
+      if (!text) {
+        const error = new Error(
+          'API returned an empty response for openaiGenerateJson.',
+        );
+        await reportError(
+          error,
+          'Error in openaiGenerateJson: API returned an empty response.',
+          contents,
+          'openaiGenerateJson-empty-response',
+        );
+        throw error;
+      }
+
+      // Handle markdown wrapped JSON
+      const prefix = '```json';
+      const suffix = '```';
+      if (text.startsWith(prefix) && text.endsWith(suffix)) {
+        text = text
+          .substring(prefix.length, text.length - suffix.length)
+          .trim();
+      }
+
+      try {
+        return JSON.parse(text);
+      } catch (parseError) {
+        await reportError(
+          parseError,
+          'Failed to parse JSON response from openaiGenerateJson.',
+          {
+            responseTextFailedToParse: text,
+            originalRequestContents: contents,
+          },
+          'openaiGenerateJson-parse',
+        );
+        throw new Error(
+          `Failed to parse API response as JSON: ${getErrorMessage(
+            parseError,
+          )}`,
+        );
+      }
+    } catch (error) {
+      if (abortSignal.aborted) {
+        throw error;
+      }
+
+      await reportError(
+        error,
+        'Error generating JSON content via OpenAI API.',
+        contents,
+        'openaiGenerateJson-api',
       );
       throw new Error(
         `Failed to generate JSON content: ${getErrorMessage(error)}`,
