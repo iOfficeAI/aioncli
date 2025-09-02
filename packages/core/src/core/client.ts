@@ -679,7 +679,7 @@ export class GeminiClient {
 
   async openaiGenerateJson(
     contents: Content[],
-    schema: SchemaUnion,
+    schema: Record<string, unknown>,
     abortSignal: AbortSignal,
     model: string,
     config: GenerateContentConfig = {},

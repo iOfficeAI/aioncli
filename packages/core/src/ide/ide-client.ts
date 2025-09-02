@@ -355,7 +355,7 @@ export class IdeClient {
       return new Response(response.body as ReadableStream<unknown> | null, {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers,
+        headers: new Headers(response.headers as HeadersInit),
       });
     };
   }
