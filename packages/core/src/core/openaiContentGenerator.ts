@@ -218,7 +218,19 @@ export class OpenAIContentGenerator implements ContentGenerator {
         createParams.store = true;
       }
 
-      if (request.config?.tools) {
+      // Handle JSON schema requests (for generateJson calls)
+      if (request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json') {
+        // Convert JSON schema request to tool call (like qwen-code approach)
+        const jsonSchemaFunction = {
+          type: 'function' as const,
+          function: {
+            name: 'respond_in_schema',
+            description: 'Provide the response in the specified JSON schema format',
+            parameters: request.config.responseJsonSchema as Record<string, unknown>,
+          },
+        };
+        createParams.tools = [jsonSchemaFunction];
+      } else if (request.config?.tools) {
         createParams.tools = await this.convertGeminiToolsToOpenAI(
           request.config.tools,
         );
@@ -228,7 +240,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
         createParams,
       )) as OpenAI.Chat.ChatCompletion;
 
-      const response = this.convertToGeminiFormat(completion);
+      // Check if this was a JSON schema request
+      const isJsonSchemaRequest = !!(request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json');
+      const response = this.convertToGeminiFormat(completion, isJsonSchemaRequest);
       const durationMs = Date.now() - startTime;
 
       // Log API response event for UI telemetry
@@ -345,7 +359,19 @@ export class OpenAIContentGenerator implements ContentGenerator {
         createParams.store = true;
       }
 
-      if (request.config?.tools) {
+      // Handle JSON schema requests (for generateJson calls) - same as non-streaming
+      if (request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json') {
+        // Convert JSON schema request to tool call (like qwen-code approach)
+        const jsonSchemaFunction = {
+          type: 'function' as const,
+          function: {
+            name: 'respond_in_schema',
+            description: 'Provide the response in the specified JSON schema format',
+            parameters: request.config.responseJsonSchema as Record<string, unknown>,
+          },
+        };
+        createParams.tools = [jsonSchemaFunction];
+      } else if (request.config?.tools) {
         createParams.tools = await this.convertGeminiToolsToOpenAI(
           request.config.tools,
         );
@@ -357,7 +383,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
         createParams,
       )) as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>;
 
-      const originalStream = this.streamGenerator(stream);
+      // Check if this was a JSON schema request
+      const isJsonSchemaRequest = !!(request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json');
+      const originalStream = this.streamGenerator(stream, isJsonSchemaRequest);
 
       // Collect all responses for final logging (don't log during streaming)
       const responses: GenerateContentResponse[] = [];
@@ -518,12 +546,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
   private async *streamGenerator(
     stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
+    isJsonSchemaRequest: boolean = false,
   ): AsyncGenerator<GenerateContentResponse> {
     // Reset the accumulator for each new stream
     this.streamingToolCalls.clear();
 
     for await (const chunk of stream) {
-      yield this.convertStreamChunkToGeminiFormat(chunk);
+      yield this.convertStreamChunkToGeminiFormat(chunk, isJsonSchemaRequest);
     }
   }
 
@@ -1130,6 +1159,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
   private convertToGeminiFormat(
     openaiResponse: OpenAI.Chat.ChatCompletion,
+    isJsonSchemaRequest: boolean = false,
   ): GenerateContentResponse {
     const choice: any = openaiResponse.choices[0];
     const response = new GenerateContentResponse();
@@ -1155,13 +1185,20 @@ export class OpenAIContentGenerator implements ContentGenerator {
             }
           }
 
-          parts.push({
-            functionCall: {
-              id: toolCall.id,
-              name: toolCall.function.name,
-              args,
-            },
-          });
+          // Special handling for JSON schema requests (like qwen-code)
+          if (isJsonSchemaRequest && toolCall.function.name === 'respond_in_schema') {
+            // Convert the function call result to a text response (simulate Gemini's JSON response)
+            parts.push({ text: JSON.stringify(args) });
+          } else {
+            // Regular tool call handling
+            parts.push({
+              functionCall: {
+                id: toolCall.id,
+                name: toolCall.function.name,
+                args,
+              },
+            });
+          }
         }
       }
     }
@@ -1219,6 +1256,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
   private convertStreamChunkToGeminiFormat(
     chunk: OpenAI.Chat.ChatCompletionChunk,
+    isJsonSchemaRequest: boolean = false,
   ): GenerateContentResponse {
     const choice = chunk.choices?.[0];
     const response = new GenerateContentResponse();
@@ -1274,13 +1312,20 @@ export class OpenAIContentGenerator implements ContentGenerator {
               }
             }
 
-            parts.push({
-              functionCall: {
-                id: accumulatedCall.id,
-                name: accumulatedCall.name,
-                args,
-              },
-            });
+            // Special handling for JSON schema requests (like qwen-code)
+            if (isJsonSchemaRequest && accumulatedCall.name === 'respond_in_schema') {
+              // Convert the function call result to a text response (simulate Gemini's JSON response)
+              parts.push({ text: JSON.stringify(args) });
+            } else {
+              // Regular tool call handling
+              parts.push({
+                functionCall: {
+                  id: accumulatedCall.id,
+                  name: accumulatedCall.name,
+                  args,
+                },
+              });
+            }
           }
         }
         // Clear all accumulated tool calls
