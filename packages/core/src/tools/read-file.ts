@@ -54,7 +54,12 @@ class ReadFileToolInvocation extends BaseToolInvocation<
     private config: Config,
     params: ReadFileToolParams,
   ) {
-    super(params);
+    // Add parameter mapping: file_path -> absolute_path
+    const mappedParams = {
+      ...params,
+      absolute_path: (params as any).file_path ?? params.absolute_path, // Support both parameter names, use ?? for empty string handling
+    };
+    super(mappedParams);
   }
 
   getDescription(): string {
@@ -176,7 +181,7 @@ export class ReadFileTool extends BaseDeclarativeTool<
       Kind.Read,
       {
         properties: {
-          absolute_path: {
+          file_path: {
             description:
               "The absolute path to the file to read (e.g., '/home/user/project/file.txt'). Relative paths are not supported. You must provide an absolute path.",
             type: 'string',
@@ -192,7 +197,7 @@ export class ReadFileTool extends BaseDeclarativeTool<
             type: 'number',
           },
         },
-        required: ['absolute_path'],
+        required: ['file_path'],
         type: 'object',
       },
     );
@@ -201,9 +206,9 @@ export class ReadFileTool extends BaseDeclarativeTool<
   protected override validateToolParamValues(
     params: ReadFileToolParams,
   ): string | null {
-    const filePath = params.absolute_path;
-    if (params.absolute_path.trim() === '') {
-      return "The 'absolute_path' parameter must be non-empty.";
+    const filePath = (params as any).file_path ?? params.absolute_path;
+    if (!filePath || filePath.trim() === '') {
+      return "The 'file_path' parameter must be non-empty.";
     }
 
     if (!path.isAbsolute(filePath)) {
@@ -223,7 +228,7 @@ export class ReadFileTool extends BaseDeclarativeTool<
     }
 
     const fileService = this.config.getFileService();
-    if (fileService.shouldGeminiIgnoreFile(params.absolute_path)) {
+    if (fileService.shouldGeminiIgnoreFile(filePath)) {
       return `File path '${filePath}' is ignored by .geminiignore pattern(s).`;
     }
 
