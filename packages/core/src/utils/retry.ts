@@ -97,6 +97,18 @@ export async function retryWithBackoff<T>(
     } catch (error) {
       const errorStatus = getErrorStatus(error);
 
+      // [PATCH:API_KEY_ROTATION]
+      if (errorStatus === 429) {
+        const rotation = await handleApiKeyRotation(authType, error, onPersistent429);
+        if (rotation.shouldContinue) {
+          attempt = 0;
+          consecutive429Count = 0;
+          currentDelay = initialDelayMs;
+          continue;
+        }
+      }
+      // [/PATCH:API_KEY_ROTATION]
+
       // Check for Pro quota exceeded error first - immediate fallback for OAuth users
       if (
         errorStatus === 429 &&
@@ -336,4 +348,35 @@ function logRetryAttempt(
   } else {
     console.warn(message, error); // Default to warn if error type is unknown
   }
+}
+
+// [PATCH:API_KEY_ROTATION] - 2025-01
+/**
+ * Handle API key rotation for quota errors.
+ * Returns true if rotation was successful and retry should continue.
+ * Supports GEMINI and OPENAI API key modes.
+ */
+async function handleApiKeyRotation(
+  authType: string | undefined,
+  error: unknown,
+  onPersistent429?: (authType?: string, error?: unknown) => Promise<string | boolean | null>
+): Promise<{ shouldContinue: boolean }> {
+  // Support GEMINI and OPENAI API key modes (not VERTEX_AI)
+  const isApiKeyMode = authType === AuthType.USE_GEMINI || 
+                       authType === AuthType.USE_OPENAI;
+  
+  if (!isApiKeyMode || !onPersistent429) {
+    return { shouldContinue: false };
+  }
+
+  try {
+    const fallbackModel = await onPersistent429(authType, error);
+    if (fallbackModel !== false && fallbackModel !== null) {
+      return { shouldContinue: true };
+    }
+  } catch (error) {
+    console.warn('API key rotation failed:', error);
+  }
+  
+  return { shouldContinue: false };
 }

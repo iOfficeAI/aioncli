@@ -121,12 +121,20 @@ export class GeminiChat {
 
   constructor(
     private readonly config: Config,
-    private readonly contentGenerator: ContentGenerator,
+    // [PATCH:API_KEY_ROTATION] Remove readonly to allow updating contentGenerator for API key rotation
+    private contentGenerator: ContentGenerator,
+    // [/PATCH:API_KEY_ROTATION]
     private readonly generationConfig: GenerateContentConfig = {},
     private history: Content[] = [],
   ) {
     validateHistory(history);
   }
+
+  // [PATCH:API_KEY_ROTATION] Update contentGenerator for API key rotation
+  updateContentGenerator(newContentGenerator: ContentGenerator): void {
+    this.contentGenerator = newContentGenerator;
+  }
+  // [/PATCH:API_KEY_ROTATION]
 
   /**
    * Handles falling back to Flash model when persistent 429 errors occur for OAuth users.
