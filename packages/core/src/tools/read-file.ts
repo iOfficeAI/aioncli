@@ -54,10 +54,10 @@ class ReadFileToolInvocation extends BaseToolInvocation<
     private config: Config,
     params: ReadFileToolParams,
   ) {
-    // 添加参数映射：file_path -> absolute_path
+    // Add parameter mapping: file_path -> absolute_path
     const mappedParams = {
       ...params,
-      absolute_path: (params as any).file_path ?? params.absolute_path, // 兼容两种参数名，使用 ?? 处理空字符串
+      absolute_path: (params as any).file_path ?? params.absolute_path, // Support both parameter names, use ?? for empty string handling
     };
     super(mappedParams);
   }
