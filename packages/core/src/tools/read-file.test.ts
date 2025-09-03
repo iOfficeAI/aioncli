@@ -76,7 +76,7 @@ describe('ReadFileTool', () => {
         absolute_path: '',
       };
       expect(() => tool.build(params)).toThrow(
-        /The 'absolute_path' parameter must be non-empty./,
+        /The 'file_path' parameter must be non-empty./,
       );
     });
 
