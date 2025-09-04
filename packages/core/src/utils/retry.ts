@@ -360,13 +360,16 @@ async function handleApiKeyRotation(
   authType: string | undefined,
   error: unknown,
   onPersistent429?: (authType?: string, error?: unknown) => Promise<string | boolean | null>
-): Promise<{ shouldContinue: boolean }> {
+): Promise<{ shouldContinue: boolean; reason?: string }> {
   // Support GEMINI and OPENAI API key modes (not VERTEX_AI)
   const isApiKeyMode = authType === AuthType.USE_GEMINI || 
                        authType === AuthType.USE_OPENAI;
   
   if (!isApiKeyMode || !onPersistent429) {
-    return { shouldContinue: false };
+    const reason = !isApiKeyMode ? 
+      `authType ${authType} not supported for rotation (only ${AuthType.USE_GEMINI}, ${AuthType.USE_OPENAI})` :
+      'no onPersistent429 callback provided';
+    return { shouldContinue: false, reason };
   }
 
   try {
@@ -374,9 +377,10 @@ async function handleApiKeyRotation(
     if (fallbackModel !== false && fallbackModel !== null) {
       return { shouldContinue: true };
     }
-  } catch (error) {
-    console.warn('API key rotation failed:', error);
+    const reason = 'rotation callback returned false/null';
+    return { shouldContinue: false, reason };
+  } catch (rotationError) {
+    const reason = `rotation callback failed: ${rotationError}`;
+    return { shouldContinue: false, reason };
   }
-  
-  return { shouldContinue: false };
 }

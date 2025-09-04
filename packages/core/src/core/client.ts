@@ -993,54 +993,6 @@ export class GeminiClient {
     };
   }
 
-  /**
-   * [PATCH:API_KEY_ROTATION] Tries to rotate API key for GEMINI/OPENAI API key authentication modes.
-   * Returns the current model name if key was rotated, null otherwise.
-   */
-  private async tryRotateApiKey(authType?: string): Promise<string | null> {
-    // Support both GEMINI and OPENAI API key modes
-    let envKey: string | undefined;
-    if (authType === AuthType.USE_GEMINI) {
-      envKey = 'GEMINI_API_KEY';
-    } else if (authType === AuthType.USE_OPENAI) {
-      envKey = 'OPENAI_API_KEY';
-    } else {
-      return null; // Not a supported API key mode
-    }
-
-    const newApiKey = process.env[envKey]?.trim();
-    if (!newApiKey) {
-      return null;
-    }
-
-    const currentConfig = this.config.getContentGeneratorConfig();
-    if (!currentConfig || currentConfig.apiKey === newApiKey) {
-      return null; // No change needed
-    }
-
-    // Update the API key and recreate contentGenerator
-    currentConfig.apiKey = newApiKey;
-    
-    try {
-      this.contentGenerator = await createContentGenerator(
-        currentConfig,
-        this.config,
-        this.config.getSessionId(),
-      );
-      
-      // [PATCH:API_KEY_ROTATION] Update existing chat instance with new contentGenerator
-      if (this.chat) {
-        this.chat.updateContentGenerator(this.contentGenerator);
-      }
-      // [/PATCH:API_KEY_ROTATION]
-      
-      return this.config.getModel();
-    } catch (error) {
-      console.warn('Failed to recreate content generator with new API key:', error);
-      return null;
-    }
-  }
-  // [/PATCH:API_KEY_ROTATION]
 
   /**
    * Handles falling back to Flash model when persistent 429 errors occur for OAuth users.
@@ -1050,12 +1002,6 @@ export class GeminiClient {
     authType?: string,
     error?: unknown,
   ): Promise<string | null> {
-    // First try to rotate API key for GEMINI API key mode
-    const rotateResult = await this.tryRotateApiKey(authType);
-    if (rotateResult) {
-      return rotateResult;
-    }
-
     // Only handle fallback for OAuth users
     if (authType !== AuthType.LOGIN_WITH_GOOGLE) {
       return null;
@@ -1083,12 +1029,13 @@ export class GeminiClient {
           this.config.setFallbackMode(true);
           return fallbackModel;
         }
+        
         // Check if the model was switched manually in the handler
         if (this.config.getModel() === fallbackModel) {
           return null; // Model was switched but don't continue with current prompt
         }
-      } catch (error) {
-        console.warn('Flash fallback handler failed:', error);
+      } catch (handlerError) {
+        console.warn('Flash fallback handler failed:', handlerError);
       }
     }
 
