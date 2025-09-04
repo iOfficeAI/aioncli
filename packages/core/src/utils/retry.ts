@@ -98,7 +98,7 @@ export async function retryWithBackoff<T>(
       const errorStatus = getErrorStatus(error);
 
       // [PATCH:API_KEY_ROTATION]
-      if (errorStatus === 429) {
+      if (errorStatus === 429 || errorStatus === 503) {
         const rotation = await handleApiKeyRotation(authType, error, onPersistent429);
         if (rotation.shouldContinue) {
           attempt = 0;
