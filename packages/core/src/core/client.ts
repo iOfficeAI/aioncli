@@ -993,6 +993,58 @@ export class GeminiClient {
     };
   }
 
+
+  /**
+   * [PATCH:API_KEY_ROTATION] Tries to rotate API key for GEMINI/OPENAI API key authentication modes.
+   * Returns the current model name if key was rotated, null otherwise.
+   */
+  private async tryRotateApiKey(authType?: string): Promise<string | null> {
+    // Support both GEMINI and OPENAI API key modes
+    let envKey: string | undefined;
+    if (authType === AuthType.USE_GEMINI) {
+      envKey = 'GEMINI_API_KEY';
+    } else if (authType === AuthType.USE_OPENAI) {
+      envKey = 'OPENAI_API_KEY';
+    } else {
+      return null; // Not a supported API key mode
+    }
+
+    const newApiKey = process.env[envKey]?.trim();
+    if (!newApiKey) {
+      return null;
+    }
+
+    const currentConfig = this.config.getContentGeneratorConfig();
+    if (!currentConfig) {
+      return null;
+    }
+    
+    if (currentConfig.apiKey === newApiKey) {
+      return null; // Same key, no rotation needed
+    }
+
+    try {
+      // Update the API key in config first
+      currentConfig.apiKey = newApiKey;
+      
+      // Create new content generator with the new API key
+      const newContentGenerator = await createContentGenerator(
+        currentConfig,
+        this.config,
+        this.config.getSessionId(),
+      );
+      
+      // Update our content generator
+      this.contentGenerator = newContentGenerator;
+      
+      const modelName = this.config.getModel();
+      return modelName;
+    } catch (_error) {
+      return null;
+    }
+  }
+  // [/PATCH:API_KEY_ROTATION]
+
   /**
    * Handles falling back to Flash model when persistent 429 errors occur for OAuth users.
    * Uses a fallback handler if provided by the config; otherwise, returns null.
@@ -1001,9 +1053,10 @@ export class GeminiClient {
     authType?: string,
     error?: unknown,
   ): Promise<string | null> {
-    // Only handle fallback for OAuth users
-    if (authType !== AuthType.LOGIN_WITH_GOOGLE) {
-      return null;
+    // First try to rotate API key for GEMINI/OPENAI API key modes
+    const rotateResult = await this.tryRotateApiKey(authType);
+    if (rotateResult) {
+      return rotateResult;
     }
 
     const currentModel = this.config.getModel();
@@ -1023,17 +1076,26 @@ export class GeminiClient {
           fallbackModel,
           error,
         );
+        
         if (accepted !== false && accepted !== null) {
-          this.config.setModel(fallbackModel);
-          this.config.setFallbackMode(true);
-          return fallbackModel;
+          // Only OAuth users need model fallback, API key users rely on key rotation
+          if (authType === AuthType.LOGIN_WITH_GOOGLE) {
+            this.config.setModel(fallbackModel);
+            this.config.setFallbackMode(true);
+            return fallbackModel;
+          } else {
+            const currentModel = this.config.getModel();
+            return currentModel; // Continue with original model, rely on API key rotation
+          }
         }
+        
         // Check if the model was switched manually in the handler
-        if (this.config.getModel() === fallbackModel) {
+        const newModel = this.config.getModel();
+        if (newModel === fallbackModel) {
           return null; // Model was switched but don't continue with current prompt
         }
-      } catch (error) {
-        console.warn('Flash fallback handler failed:', error);
+      } catch (handlerError) {
+        console.warn('Flash fallback handler failed:', handlerError);
       }
     }
 

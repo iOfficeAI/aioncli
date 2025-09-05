@@ -442,7 +442,9 @@ export class Config {
   }
 
   setFlashFallbackHandler(handler: FlashFallbackHandler): void {
+    console.log(`[Config] Registering flashFallbackHandler`);
     this.flashFallbackHandler = handler;
+    console.log(`[Config] FlashFallbackHandler registered successfully`);
   }
 
   getMaxSessionTurns(): number {

@@ -18,7 +18,7 @@ import {
 } from '@google/genai';
 import { retryWithBackoff } from '../utils/retry.js';
 import { isFunctionResponse } from '../utils/messageInspectors.js';
-import { ContentGenerator, AuthType } from './contentGenerator.js';
+import { ContentGenerator, AuthType, createContentGenerator } from './contentGenerator.js';
 import { Config } from '../config/config.js';
 import { DEFAULT_GEMINI_FLASH_MODEL } from '../config/models.js';
 import { hasCycleInSchema } from '../tools/tools.js';
@@ -121,12 +121,86 @@ export class GeminiChat {
 
   constructor(
     private readonly config: Config,
-    private readonly contentGenerator: ContentGenerator,
+    // [PATCH:API_KEY_ROTATION] Remove readonly to allow updating contentGenerator for API key rotation
+    private contentGenerator: ContentGenerator,
+    // [/PATCH:API_KEY_ROTATION]
     private readonly generationConfig: GenerateContentConfig = {},
     private history: Content[] = [],
   ) {
     validateHistory(history);
   }
+
+  // [PATCH:API_KEY_ROTATION] Update contentGenerator for API key rotation
+  updateContentGenerator(newContentGenerator: ContentGenerator): void {
+    console.log('[API_KEY_ROTATION] Updating content generator in GeminiChat instance');
+    this.contentGenerator = newContentGenerator;
+    console.log('[API_KEY_ROTATION] Content generator updated successfully');
+  }
+  // [/PATCH:API_KEY_ROTATION]
+
+  /**
+   * [PATCH:API_KEY_ROTATION] Safely format API key for logging (shows first 8 and last 4 chars)
+   */
+  private formatApiKeyForLog(apiKey: string): string {
+    if (!apiKey || apiKey.length < 12) {
+      return 'invalid-key';
+    }
+    const start = apiKey.substring(0, 8);
+    const end = apiKey.substring(apiKey.length - 4);
+    const middle = '*'.repeat(Math.min(apiKey.length - 12, 20));
+    return `${start}${middle}${end}`;
+  }
+
+  /**
+   * [PATCH:API_KEY_ROTATION] Tries to rotate API key for GEMINI/OPENAI API key authentication modes.
+   * Returns the current model name if key was rotated, null otherwise.
+   */
+  private async tryRotateApiKey(authType?: string): Promise<string | null> {
+    // Support both GEMINI and OPENAI API key modes
+    let envKey: string | undefined;
+    if (authType === AuthType.USE_GEMINI) {
+      envKey = 'GEMINI_API_KEY';
+    } else if (authType === AuthType.USE_OPENAI) {
+      envKey = 'OPENAI_API_KEY';
+    } else {
+      return null; // Not a supported API key mode
+    }
+
+    const newApiKey = process.env[envKey]?.trim();
+    if (!newApiKey) {
+      return null;
+    }
+
+    const currentConfig = this.config.getContentGeneratorConfig();
+    if (!currentConfig) {
+      return null;
+    }
+    
+    if (currentConfig.apiKey === newApiKey) {
+      return null; // Same key, no rotation needed
+    }
+
+    try {
+      // Update the API key in config first
+      currentConfig.apiKey = newApiKey;
+      
+      // Create new content generator with the new API key
+      const newContentGenerator = await createContentGenerator(
+        currentConfig,
+        this.config,
+        this.config.getSessionId(),
+      );
+      
+      // Update our content generator
+      this.contentGenerator = newContentGenerator;
+      
+      const modelName = this.config.getModel();
+      return modelName;
+    } catch (_error) {
+      return null;
+    }
+  }
+  // [/PATCH:API_KEY_ROTATION]
 
   /**
    * Handles falling back to Flash model when persistent 429 errors occur for OAuth users.
@@ -136,9 +210,10 @@ export class GeminiChat {
     authType?: string,
     error?: unknown,
   ): Promise<string | null> {
-    // Only handle fallback for OAuth users
-    if (authType !== AuthType.LOGIN_WITH_GOOGLE) {
-      return null;
+    // First try to rotate API key for GEMINI/OPENAI API key modes
+    const rotateResult = await this.tryRotateApiKey(authType);
+    if (rotateResult) {
+      return rotateResult;
     }
 
     const currentModel = this.config.getModel();
@@ -158,17 +233,26 @@ export class GeminiChat {
           fallbackModel,
           error,
         );
+        
         if (accepted !== false && accepted !== null) {
-          this.config.setModel(fallbackModel);
-          this.config.setFallbackMode(true);
-          return fallbackModel;
+          // Only OAuth users need model fallback, API key users rely on key rotation
+          if (authType === AuthType.LOGIN_WITH_GOOGLE) {
+            this.config.setModel(fallbackModel);
+            this.config.setFallbackMode(true);
+            return fallbackModel;
+          } else {
+            const currentModel = this.config.getModel();
+            return currentModel; // Continue with original model, rely on API key rotation
+          }
         }
+        
         // Check if the model was switched manually in the handler
-        if (this.config.getModel() === fallbackModel) {
+        const newModel = this.config.getModel();
+        if (newModel === fallbackModel) {
           return null; // Model was switched but don't continue with current prompt
         }
       } catch (error) {
-        console.warn('Flash fallback handler failed:', error);
+        // Fallback handler failed, continue to return null
       }
     }
 
