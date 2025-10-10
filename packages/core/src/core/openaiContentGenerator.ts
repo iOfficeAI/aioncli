@@ -4,14 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
+import type {
   CountTokensResponse,
-  GenerateContentResponse,
   GenerateContentParameters,
   CountTokensParameters,
   EmbedContentResponse,
   EmbedContentParameters,
-  FinishReason,
   Part,
   Content,
   Tool,
@@ -20,11 +18,12 @@ import {
   FunctionCall,
   FunctionResponse,
 } from '@google/genai';
-import { ContentGenerator } from './contentGenerator.js';
+import { GenerateContentResponse, FinishReason } from '@google/genai';
+import type { ContentGenerator } from './contentGenerator.js';
 import OpenAI from 'openai';
 import { logApiResponse } from '../telemetry/loggers.js';
 import { ApiResponseEvent } from '../telemetry/types.js';
-import { Config } from '../config/config.js';
+import type { Config } from '../config/config.js';
 import { safeJsonParse } from '../utils/safeJsonParse.js';
 
 // OpenAI API type definitions for logging
@@ -165,8 +164,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       return false;
     }
     return (
-      hostname === 'api.openai.com' ||
-      hostname === 'dashscope.aliyuncs.com'
+      hostname === 'api.openai.com' || hostname === 'dashscope.aliyuncs.com'
     );
   }
 
@@ -175,11 +173,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
    * @param userPromptId The prompt ID for this request
    * @returns metadata object if should be included, undefined otherwise
    */
-  private buildMetadata(userPromptId: string): Record<string, string> | undefined {
+  private buildMetadata(
+    userPromptId: string,
+  ): Record<string, string> | undefined {
     if (!this.shouldIncludeMetadata()) {
       return undefined;
     }
-    
+
     return {
       sessionId: this.config.getSessionId?.() || '',
       promptId: userPromptId,
@@ -245,21 +245,30 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Enable store for GPT-5 and GPT-4o models when using metadata
       const modelName = this.model.toLowerCase();
-      if (modelName.includes('gpt-') || 
-          modelName.includes('gpt5') || 
-          modelName.includes('gpt4')) {
+      if (
+        modelName.includes('gpt-') ||
+        modelName.includes('gpt5') ||
+        modelName.includes('gpt4')
+      ) {
         createParams.store = true;
       }
 
       // Handle JSON schema requests (for generateJson calls)
-      if (request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json') {
+      if (
+        request.config?.responseJsonSchema &&
+        request.config?.responseMimeType === 'application/json'
+      ) {
         // Convert JSON schema request to tool call (like qwen-code approach)
         const jsonSchemaFunction = {
           type: 'function' as const,
           function: {
             name: 'respond_in_schema',
-            description: 'Provide the response in the specified JSON schema format',
-            parameters: request.config.responseJsonSchema as Record<string, unknown>,
+            description:
+              'Provide the response in the specified JSON schema format',
+            parameters: request.config.responseJsonSchema as Record<
+              string,
+              unknown
+            >,
           },
         };
         createParams.tools = [jsonSchemaFunction];
@@ -274,8 +283,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
       )) as OpenAI.Chat.ChatCompletion;
 
       // Check if this was a JSON schema request
-      const isJsonSchemaRequest = !!(request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json');
-      const response = this.convertToGeminiFormat(completion, isJsonSchemaRequest);
+      const isJsonSchemaRequest = !!(
+        request.config?.responseJsonSchema &&
+        request.config?.responseMimeType === 'application/json'
+      );
+      const response = this.convertToGeminiFormat(
+        completion,
+        isJsonSchemaRequest,
+      );
       const durationMs = Date.now() - startTime;
 
       // Log API response event for UI telemetry
@@ -332,7 +347,6 @@ export class OpenAIContentGenerator implements ContentGenerator {
         userPromptId,
         this.config.getContentGeneratorConfig()?.authType,
         estimatedUsage,
-        undefined,
         errorMessage,
       );
       logApiResponse(this.config, errorEvent);
@@ -384,21 +398,30 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Enable store for GPT-5 and GPT-4 models when using metadata
       const modelNameStream = this.model.toLowerCase();
-      if (modelNameStream.includes('gpt-') || 
-          modelNameStream.includes('gpt5') || 
-          modelNameStream.includes('gpt4')) {
+      if (
+        modelNameStream.includes('gpt-') ||
+        modelNameStream.includes('gpt5') ||
+        modelNameStream.includes('gpt4')
+      ) {
         createParams.store = true;
       }
 
       // Handle JSON schema requests (for generateJson calls) - same as non-streaming
-      if (request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json') {
+      if (
+        request.config?.responseJsonSchema &&
+        request.config?.responseMimeType === 'application/json'
+      ) {
         // Convert JSON schema request to tool call (like qwen-code approach)
         const jsonSchemaFunction = {
           type: 'function' as const,
           function: {
             name: 'respond_in_schema',
-            description: 'Provide the response in the specified JSON schema format',
-            parameters: request.config.responseJsonSchema as Record<string, unknown>,
+            description:
+              'Provide the response in the specified JSON schema format',
+            parameters: request.config.responseJsonSchema as Record<
+              string,
+              unknown
+            >,
           },
         };
         createParams.tools = [jsonSchemaFunction];
@@ -415,7 +438,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
       )) as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>;
 
       // Check if this was a JSON schema request
-      const isJsonSchemaRequest = !!(request.config?.responseJsonSchema && request.config?.responseMimeType === 'application/json');
+      const isJsonSchemaRequest = !!(
+        request.config?.responseJsonSchema &&
+        request.config?.responseMimeType === 'application/json'
+      );
       const originalStream = this.streamGenerator(stream, isJsonSchemaRequest);
 
       // Collect all responses for final logging (don't log during streaming)
@@ -488,7 +514,6 @@ export class OpenAIContentGenerator implements ContentGenerator {
             userPromptId,
             this.config.getContentGeneratorConfig()?.authType,
             estimatedUsage,
-            undefined,
             errorMessage,
           );
           logApiResponse(this.config, errorEvent);
@@ -550,7 +575,6 @@ export class OpenAIContentGenerator implements ContentGenerator {
         userPromptId,
         this.config.getContentGeneratorConfig()?.authType,
         estimatedUsage,
-        undefined,
         errorMessage,
       );
       logApiResponse(this.config, errorEvent);
@@ -1212,7 +1236,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
           }
 
           // Special handling for JSON schema requests (like qwen-code)
-          if (isJsonSchemaRequest && toolCall.function.name === 'respond_in_schema') {
+          if (
+            isJsonSchemaRequest &&
+            toolCall.function.name === 'respond_in_schema'
+          ) {
             // Convert the function call result to a text response (simulate Gemini's JSON response)
             parts.push({ text: JSON.stringify(args) });
           } else {
@@ -1332,7 +1359,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
             }
 
             // Special handling for JSON schema requests (like qwen-code)
-            if (isJsonSchemaRequest && accumulatedCall.name === 'respond_in_schema') {
+            if (
+              isJsonSchemaRequest &&
+              accumulatedCall.name === 'respond_in_schema'
+            ) {
               // Convert the function call result to a text response (simulate Gemini's JSON response)
               parts.push({ text: JSON.stringify(args) });
             } else {
@@ -1466,9 +1496,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
     // Force temperature to 1 for GPT-5 and GPT-4o models if temperature is present
     const modelName = this.model.toLowerCase();
-    if ((modelName.includes('gpt-5') || modelName.includes('gpt5') || 
-         modelName.includes('gpt-4o') || modelName.includes('gpt4o')) && 
-        params.temperature !== undefined) {
+    if (
+      (modelName.includes('gpt-5') ||
+        modelName.includes('gpt5') ||
+        modelName.includes('gpt-4o') ||
+        modelName.includes('gpt4o')) &&
+      params.temperature !== undefined
+    ) {
       params.temperature = 1.0;
     }
 

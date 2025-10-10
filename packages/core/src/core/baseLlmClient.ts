@@ -10,15 +10,20 @@ import type {
   Part,
   EmbedContentParameters,
   GenerateContentResponse,
+  Tool,
+  FunctionDeclaration,
+  Schema,
 } from '@google/genai';
 import type { Config } from '../config/config.js';
 import type { ContentGenerator } from './contentGenerator.js';
+import { AuthType } from './contentGenerator.js';
 import { getResponseText } from '../utils/partUtils.js';
 import { reportError } from '../utils/errorReporting.js';
 import { getErrorMessage } from '../utils/errors.js';
 import { logMalformedJsonResponse } from '../telemetry/loggers.js';
 import { MalformedJsonResponseEvent } from '../telemetry/types.js';
 import { retryWithBackoff } from '../utils/retry.js';
+import { getFunctionCalls } from '../utils/generateContentResponseUtilities.js';
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 
@@ -88,6 +93,15 @@ export class BaseLlmClient {
       maxAttempts,
     } = options;
 
+    // Check if using OpenAI authType
+    const authType = this.config.getContentGeneratorConfig()?.authType;
+    const isOpenAI = authType === AuthType.USE_OPENAI;
+
+    if (isOpenAI) {
+      return this.generateJsonForOpenAI(options);
+    }
+
+    // Standard Gemini implementation
     const requestConfig: GenerateContentConfig = {
       abortSignal,
       ...this.defaultUtilityConfig,
@@ -155,6 +169,124 @@ export class BaseLlmClient {
         );
       }
 
+      throw new Error(
+        `Failed to generate JSON content: ${getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  /**
+   * OpenAI-specific implementation using function calling instead of responseJsonSchema
+   */
+  private async generateJsonForOpenAI(
+    options: GenerateJsonOptions,
+  ): Promise<Record<string, unknown>> {
+    const {
+      contents,
+      schema,
+      model,
+      abortSignal,
+      systemInstruction,
+      promptId,
+      maxAttempts,
+    } = options;
+
+    try {
+      // Create function declaration for OpenAI-style response
+      const functionDeclaration: FunctionDeclaration = {
+        name: 'respond_in_schema',
+        description: 'Provide the response in provided schema',
+        parameters: schema as Schema,
+      };
+
+      const tools: Tool[] = [
+        {
+          functionDeclarations: [functionDeclaration],
+        },
+      ];
+
+      const requestConfig: GenerateContentConfig = {
+        abortSignal,
+        ...this.defaultUtilityConfig,
+        ...options.config,
+        ...(systemInstruction && { systemInstruction }),
+        tools,
+      };
+
+      const apiCall = () =>
+        this.contentGenerator.generateContent(
+          {
+            model,
+            config: requestConfig,
+            contents,
+          },
+          promptId,
+        );
+
+      const result = await retryWithBackoff(apiCall, {
+        maxAttempts: maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+      });
+
+      // Try to extract function call arguments
+      const functionCalls = getFunctionCalls(result);
+
+      if (functionCalls && functionCalls.length > 0) {
+        const functionCall = functionCalls.find(
+          (call) => call.name === 'respond_in_schema',
+        );
+        if (functionCall && functionCall.args) {
+          return functionCall.args;
+        }
+      }
+
+      // Fallback: try to parse response text as JSON
+      let text = getResponseText(result);
+
+      if (!text) {
+        const error = new Error(
+          'API returned an empty response for generateJson (OpenAI).',
+        );
+        await reportError(
+          error,
+          'Error in generateJson (OpenAI): API returned an empty response.',
+          contents,
+          'generateJson-openai-empty-response',
+        );
+        throw error;
+      }
+
+      // Handle markdown wrapped JSON
+      text = this.cleanJsonResponse(text, model);
+
+      try {
+        return JSON.parse(text);
+      } catch (parseError) {
+        await reportError(
+          parseError,
+          'Failed to parse JSON response from generateJson (OpenAI).',
+          {
+            responseTextFailedToParse: text,
+            originalRequestContents: contents,
+          },
+          'generateJson-openai-parse',
+        );
+        throw new Error(
+          `Failed to parse API response as JSON: ${getErrorMessage(
+            parseError,
+          )}`,
+        );
+      }
+    } catch (error) {
+      if (abortSignal.aborted) {
+        throw error;
+      }
+
+      await reportError(
+        error,
+        'Error generating JSON content via OpenAI API.',
+        contents,
+        'generateJson-openai-api',
+      );
       throw new Error(
         `Failed to generate JSON content: ${getErrorMessage(error)}`,
       );

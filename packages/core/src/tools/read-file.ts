@@ -49,9 +49,12 @@ class ReadFileToolInvocation extends BaseToolInvocation<
     params: ReadFileToolParams,
   ) {
     // Add parameter mapping: file_path -> absolute_path
+    const paramsWithFilePath = params as ReadFileToolParams & {
+      file_path?: string;
+    };
     const mappedParams = {
       ...params,
-      absolute_path: (params as any).file_path ?? params.absolute_path, // Support both parameter names, use ?? for empty string handling
+      absolute_path: paramsWithFilePath.file_path ?? params.absolute_path, // Support both parameter names, use ?? for empty string handling
     };
     super(mappedParams);
   }
@@ -175,7 +178,10 @@ export class ReadFileTool extends BaseDeclarativeTool<
   protected override validateToolParamValues(
     params: ReadFileToolParams,
   ): string | null {
-    const filePath = (params as any).file_path ?? params.absolute_path;
+    const paramsWithFilePath = params as ReadFileToolParams & {
+      file_path?: string;
+    };
+    const filePath = paramsWithFilePath.file_path ?? params.absolute_path;
     if (!filePath || filePath.trim() === '') {
       return "The 'file_path' parameter must be non-empty.";
     }
