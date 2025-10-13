@@ -9,20 +9,64 @@
 
 import {
   GenerateContentResponse,
-  Content,
-  GenerateContentConfig,
-  SendMessageParameters,
-  createUserContent,
-  Part,
-  Tool,
+  type Content,
+  type GenerateContentConfig,
+  type SendMessageParameters,
+  type Part,
+  type Tool,
+  FinishReason,
+  ApiError,
 } from '@google/genai';
+import { toParts } from '../code_assist/converter.js';
+import { createUserContent } from '@google/genai';
 import { retryWithBackoff } from '../utils/retry.js';
+import type { Config } from '../config/config.js';
+import {
+  DEFAULT_GEMINI_FLASH_MODEL,
+  getEffectiveModel,
+} from '../config/models.js';
+import { hasCycleInSchema, MUTATOR_KINDS } from '../tools/tools.js';
+import type { StructuredError } from './turn.js';
+import {
+  logContentRetry,
+  logContentRetryFailure,
+} from '../telemetry/loggers.js';
+import { ChatRecordingService } from '../services/chatRecordingService.js';
+import {
+  ContentRetryEvent,
+  ContentRetryFailureEvent,
+} from '../telemetry/types.js';
+import { handleFallback } from '../fallback/handler.js';
 import { isFunctionResponse } from '../utils/messageInspectors.js';
-import { ContentGenerator, AuthType, createContentGenerator } from './contentGenerator.js';
-import { Config } from '../config/config.js';
-import { DEFAULT_GEMINI_FLASH_MODEL } from '../config/models.js';
-import { hasCycleInSchema } from '../tools/tools.js';
-import { StructuredError } from './turn.js';
+import { partListUnionToString } from './geminiRequest.js';
+import { uiTelemetryService } from '../telemetry/uiTelemetry.js';
+
+export enum StreamEventType {
+  /** A regular content chunk from the API. */
+  CHUNK = 'chunk',
+  /** A signal that a retry is about to happen. The UI should discard any partial
+   * content from the attempt that just failed. */
+  RETRY = 'retry',
+}
+
+export type StreamEvent =
+  | { type: StreamEventType.CHUNK; value: GenerateContentResponse }
+  | { type: StreamEventType.RETRY };
+
+/**
+ * Options for retrying due to invalid content from the model.
+ */
+interface ContentRetryOptions {
+  /** Total number of attempts to make (1 initial + N retries). */
+  maxAttempts: number;
+  /** The base delay in milliseconds for linear backoff. */
+  initialDelayMs: number;
+}
+
+const INVALID_CONTENT_RETRY_OPTIONS: ContentRetryOptions = {
+  maxAttempts: 2, // 1 initial call + 1 retry
+  initialDelayMs: 500,
+};
 
 /**
  * Returns true if the response is valid, false otherwise.
@@ -36,6 +80,19 @@ function isValidResponse(response: GenerateContentResponse): boolean {
     return false;
   }
   return isValidContent(content);
+}
+
+export function isValidNonThoughtTextPart(part: Part): boolean {
+  return (
+    typeof part.text === 'string' &&
+    !part.thought &&
+    // Technically, the model should never generate parts that have text and
+    //  any of these but we don't trust them so check anyways.
+    !part.functionCall &&
+    !part.functionResponse &&
+    !part.inlineData &&
+    !part.fileData
+  );
 }
 
 function isValidContent(content: Content): boolean {
@@ -98,13 +155,24 @@ function extractCuratedHistory(comprehensiveHistory: Content[]): Content[] {
       }
       if (isValid) {
         curatedHistory.push(...modelOutput);
-      } else {
-        // Remove the last user input when model content is invalid.
-        curatedHistory.pop();
       }
     }
   }
   return curatedHistory;
+}
+
+/**
+ * Custom error to signal that a stream completed with invalid content,
+ * which should trigger a retry.
+ */
+export class InvalidStreamError extends Error {
+  readonly type: 'NO_FINISH_REASON' | 'NO_RESPONSE_TEXT';
+
+  constructor(message: string, type: 'NO_FINISH_REASON' | 'NO_RESPONSE_TEXT') {
+    super(message);
+    this.name = 'InvalidStreamError';
+    this.type = type;
+  }
 }
 
 /**
@@ -118,248 +186,20 @@ export class GeminiChat {
   // A promise to represent the current state of the message being sent to the
   // model.
   private sendPromise: Promise<void> = Promise.resolve();
+  private readonly chatRecordingService: ChatRecordingService;
 
   constructor(
     private readonly config: Config,
-    // [PATCH:API_KEY_ROTATION] Remove readonly to allow updating contentGenerator for API key rotation
-    private contentGenerator: ContentGenerator,
-    // [/PATCH:API_KEY_ROTATION]
     private readonly generationConfig: GenerateContentConfig = {},
     private history: Content[] = [],
   ) {
     validateHistory(history);
-  }
-
-  // [PATCH:API_KEY_ROTATION] Update contentGenerator for API key rotation
-  updateContentGenerator(newContentGenerator: ContentGenerator): void {
-    console.log('[API_KEY_ROTATION] Updating content generator in GeminiChat instance');
-    this.contentGenerator = newContentGenerator;
-    console.log('[API_KEY_ROTATION] Content generator updated successfully');
-  }
-  // [/PATCH:API_KEY_ROTATION]
-
-  /**
-   * [PATCH:API_KEY_ROTATION] Safely format API key for logging (shows first 8 and last 4 chars)
-   */
-  private formatApiKeyForLog(apiKey: string): string {
-    if (!apiKey || apiKey.length < 12) {
-      return 'invalid-key';
-    }
-    const start = apiKey.substring(0, 8);
-    const end = apiKey.substring(apiKey.length - 4);
-    const middle = '*'.repeat(Math.min(apiKey.length - 12, 20));
-    return `${start}${middle}${end}`;
-  }
-
-  /**
-   * [PATCH:API_KEY_ROTATION] Tries to rotate API key for GEMINI/OPENAI API key authentication modes.
-   * Returns the current model name if key was rotated, null otherwise.
-   */
-  private async tryRotateApiKey(authType?: string): Promise<string | null> {
-    // Support both GEMINI and OPENAI API key modes
-    let envKey: string | undefined;
-    if (authType === AuthType.USE_GEMINI) {
-      envKey = 'GEMINI_API_KEY';
-    } else if (authType === AuthType.USE_OPENAI) {
-      envKey = 'OPENAI_API_KEY';
-    } else {
-      return null; // Not a supported API key mode
-    }
-
-    const newApiKey = process.env[envKey]?.trim();
-    if (!newApiKey) {
-      return null;
-    }
-
-    const currentConfig = this.config.getContentGeneratorConfig();
-    if (!currentConfig) {
-      return null;
-    }
-    
-    if (currentConfig.apiKey === newApiKey) {
-      return null; // Same key, no rotation needed
-    }
-
-    try {
-      // Update the API key in config first
-      currentConfig.apiKey = newApiKey;
-      
-      // Create new content generator with the new API key
-      const newContentGenerator = await createContentGenerator(
-        currentConfig,
-        this.config,
-        this.config.getSessionId(),
-      );
-      
-      // Update our content generator
-      this.contentGenerator = newContentGenerator;
-      
-      const modelName = this.config.getModel();
-      return modelName;
-    } catch (_error) {
-      return null;
-    }
-  }
-  // [/PATCH:API_KEY_ROTATION]
-
-  /**
-   * Handles falling back to Flash model when persistent 429 errors occur for OAuth users.
-   * Uses a fallback handler if provided by the config; otherwise, returns null.
-   */
-  private async handleFlashFallback(
-    authType?: string,
-    error?: unknown,
-  ): Promise<string | null> {
-    // First try to rotate API key for GEMINI/OPENAI API key modes
-    const rotateResult = await this.tryRotateApiKey(authType);
-    if (rotateResult) {
-      return rotateResult;
-    }
-
-    const currentModel = this.config.getModel();
-    const fallbackModel = DEFAULT_GEMINI_FLASH_MODEL;
-
-    // Don't fallback if already using Flash model
-    if (currentModel === fallbackModel) {
-      return null;
-    }
-
-    // Check if config has a fallback handler (set by CLI package)
-    const fallbackHandler = this.config.flashFallbackHandler;
-    if (typeof fallbackHandler === 'function') {
-      try {
-        const accepted = await fallbackHandler(
-          currentModel,
-          fallbackModel,
-          error,
-        );
-        
-        if (accepted !== false && accepted !== null) {
-          // Only OAuth users need model fallback, API key users rely on key rotation
-          if (authType === AuthType.LOGIN_WITH_GOOGLE) {
-            this.config.setModel(fallbackModel);
-            this.config.setFallbackMode(true);
-            return fallbackModel;
-          } else {
-            const currentModel = this.config.getModel();
-            return currentModel; // Continue with original model, rely on API key rotation
-          }
-        }
-        
-        // Check if the model was switched manually in the handler
-        const newModel = this.config.getModel();
-        if (newModel === fallbackModel) {
-          return null; // Model was switched but don't continue with current prompt
-        }
-      } catch (error) {
-        // Fallback handler failed, continue to return null
-      }
-    }
-
-    return null;
+    this.chatRecordingService = new ChatRecordingService(config);
+    this.chatRecordingService.initialize();
   }
 
   setSystemInstruction(sysInstr: string) {
     this.generationConfig.systemInstruction = sysInstr;
-  }
-  /**
-   * Sends a message to the model and returns the response.
-   *
-   * @remarks
-   * This method will wait for the previous message to be processed before
-   * sending the next message.
-   *
-   * @see {@link Chat#sendMessageStream} for streaming method.
-   * @param params - parameters for sending messages within a chat session.
-   * @returns The model's response.
-   *
-   * @example
-   * ```ts
-   * const chat = ai.chats.create({model: 'gemini-2.0-flash'});
-   * const response = await chat.sendMessage({
-   *   message: 'Why is the sky blue?'
-   * });
-   * console.log(response.text);
-   * ```
-   */
-  async sendMessage(
-    params: SendMessageParameters,
-    prompt_id: string,
-  ): Promise<GenerateContentResponse> {
-    await this.sendPromise;
-    const userContent = createUserContent(params.message);
-    const requestContents = this.getHistory(true).concat(userContent);
-
-    let response: GenerateContentResponse;
-
-    try {
-      const apiCall = () => {
-        const modelToUse = this.config.getModel() || DEFAULT_GEMINI_FLASH_MODEL;
-
-        // Prevent Flash model calls immediately after quota error
-        if (
-          this.config.getQuotaErrorOccurred() &&
-          modelToUse === DEFAULT_GEMINI_FLASH_MODEL
-        ) {
-          throw new Error(
-            'Please submit a new query to continue with the Flash model.',
-          );
-        }
-
-        return this.contentGenerator.generateContent(
-          {
-            model: modelToUse,
-            contents: requestContents,
-            config: { ...this.generationConfig, ...params.config },
-          },
-          prompt_id,
-        );
-      };
-
-      response = await retryWithBackoff(apiCall, {
-        shouldRetry: (error: unknown) => {
-          // Check for known error messages and codes.
-          if (error instanceof Error && error.message) {
-            if (isSchemaDepthError(error.message)) return false;
-            if (error.message.includes('429')) return true;
-            if (error.message.match(/5\d{2}/)) return true;
-          }
-          return false; // Don't retry other errors by default
-        },
-        onPersistent429: async (authType?: string, error?: unknown) =>
-          await this.handleFlashFallback(authType, error),
-        authType: this.config.getContentGeneratorConfig()?.authType,
-      });
-
-      this.sendPromise = (async () => {
-        const outputContent = response.candidates?.[0]?.content;
-        // Because the AFC input contains the entire curated chat history in
-        // addition to the new user input, we need to truncate the AFC history
-        // to deduplicate the existing chat history.
-        const fullAutomaticFunctionCallingHistory =
-          response.automaticFunctionCallingHistory;
-        const index = this.getHistory(true).length;
-        let automaticFunctionCallingHistory: Content[] = [];
-        if (fullAutomaticFunctionCallingHistory != null) {
-          automaticFunctionCallingHistory =
-            fullAutomaticFunctionCallingHistory.slice(index) ?? [];
-        }
-        const modelOutput = outputContent ? [outputContent] : [];
-        this.recordHistory(
-          userContent,
-          modelOutput,
-          automaticFunctionCallingHistory,
-        );
-      })();
-      await this.sendPromise.catch(() => {
-        // Resets sendPromise to avoid subsequent calls failing
-        this.sendPromise = Promise.resolve();
-      });
-      return response;
-    } catch (error) {
-      this.sendPromise = Promise.resolve();
-      throw error;
-    }
   }
 
   /**
@@ -377,77 +217,175 @@ export class GeminiChat {
    * ```ts
    * const chat = ai.chats.create({model: 'gemini-2.0-flash'});
    * const response = await chat.sendMessageStream({
-   *   message: 'Why is the sky blue?'
+   * message: 'Why is the sky blue?'
    * });
    * for await (const chunk of response) {
-   *   console.log(chunk.text);
+   * console.log(chunk.text);
    * }
    * ```
    */
   async sendMessageStream(
+    model: string,
+    params: SendMessageParameters,
+    prompt_id: string,
+  ): Promise<AsyncGenerator<StreamEvent>> {
+    await this.sendPromise;
+
+    let streamDoneResolver: () => void;
+    const streamDonePromise = new Promise<void>((resolve) => {
+      streamDoneResolver = resolve;
+    });
+    this.sendPromise = streamDonePromise;
+
+    const userContent = createUserContent(params.message);
+
+    // Record user input - capture complete message with all parts (text, files, images, etc.)
+    // but skip recording function responses (tool call results) as they should be stored in tool call records
+    if (!isFunctionResponse(userContent)) {
+      const userMessage = Array.isArray(params.message)
+        ? params.message
+        : [params.message];
+      const userMessageContent = partListUnionToString(toParts(userMessage));
+      this.chatRecordingService.recordMessage({
+        model,
+        type: 'user',
+        content: userMessageContent,
+      });
+    }
+
+    // Add user content to history ONCE before any attempts.
+    this.history.push(userContent);
+    const requestContents = this.getHistory(true);
+
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    return (async function* () {
+      try {
+        let lastError: unknown = new Error('Request failed after all retries.');
+
+        for (
+          let attempt = 0;
+          attempt < INVALID_CONTENT_RETRY_OPTIONS.maxAttempts;
+          attempt++
+        ) {
+          try {
+            if (attempt > 0) {
+              yield { type: StreamEventType.RETRY };
+            }
+
+            const stream = await self.makeApiCallAndProcessStream(
+              model,
+              requestContents,
+              params,
+              prompt_id,
+            );
+
+            for await (const chunk of stream) {
+              yield { type: StreamEventType.CHUNK, value: chunk };
+            }
+
+            lastError = null;
+            break;
+          } catch (error) {
+            lastError = error;
+            const isContentError = error instanceof InvalidStreamError;
+
+            if (isContentError) {
+              // Check if we have more attempts left.
+              if (attempt < INVALID_CONTENT_RETRY_OPTIONS.maxAttempts - 1) {
+                logContentRetry(
+                  self.config,
+                  new ContentRetryEvent(
+                    attempt,
+                    (error as InvalidStreamError).type,
+                    INVALID_CONTENT_RETRY_OPTIONS.initialDelayMs,
+                    model,
+                  ),
+                );
+                await new Promise((res) =>
+                  setTimeout(
+                    res,
+                    INVALID_CONTENT_RETRY_OPTIONS.initialDelayMs *
+                      (attempt + 1),
+                  ),
+                );
+                continue;
+              }
+            }
+            break;
+          }
+        }
+
+        if (lastError) {
+          if (lastError instanceof InvalidStreamError) {
+            logContentRetryFailure(
+              self.config,
+              new ContentRetryFailureEvent(
+                INVALID_CONTENT_RETRY_OPTIONS.maxAttempts,
+                (lastError as InvalidStreamError).type,
+                model,
+              ),
+            );
+          }
+          throw lastError;
+        }
+      } finally {
+        streamDoneResolver!();
+      }
+    })();
+  }
+
+  private async makeApiCallAndProcessStream(
+    model: string,
+    requestContents: Content[],
     params: SendMessageParameters,
     prompt_id: string,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
-    await this.sendPromise;
-    const userContent = createUserContent(params.message);
-    const requestContents = this.getHistory(true).concat(userContent);
+    const apiCall = () => {
+      const modelToUse = getEffectiveModel(
+        this.config.isInFallbackMode(),
+        model,
+      );
 
-    try {
-      const apiCall = () => {
-        const modelToUse = this.config.getModel();
-
-        // Prevent Flash model calls immediately after quota error
-        if (
-          this.config.getQuotaErrorOccurred() &&
-          modelToUse === DEFAULT_GEMINI_FLASH_MODEL
-        ) {
-          throw new Error(
-            'Please submit a new query to continue with the Flash model.',
-          );
-        }
-
-        return this.contentGenerator.generateContentStream(
-          {
-            model: modelToUse,
-            contents: requestContents,
-            config: { ...this.generationConfig, ...params.config },
-          },
-          prompt_id,
+      if (
+        this.config.getQuotaErrorOccurred() &&
+        modelToUse === DEFAULT_GEMINI_FLASH_MODEL
+      ) {
+        throw new Error(
+          'Please submit a new query to continue with the Flash model.',
         );
-      };
+      }
 
-      // Note: Retrying streams can be complex. If generateContentStream itself doesn't handle retries
-      // for transient issues internally before yielding the async generator, this retry will re-initiate
-      // the stream. For simple 429/500 errors on initial call, this is fine.
-      // If errors occur mid-stream, this setup won't resume the stream; it will restart it.
-      const streamResponse = await retryWithBackoff(apiCall, {
-        shouldRetry: (error: unknown) => {
-          // Check for known error messages and codes.
-          if (error instanceof Error && error.message) {
-            if (isSchemaDepthError(error.message)) return false;
-            if (error.message.includes('429')) return true;
-            if (error.message.match(/5\d{2}/)) return true;
-          }
-          return false; // Don't retry other errors by default
+      return this.config.getContentGenerator().generateContentStream(
+        {
+          model: modelToUse,
+          contents: requestContents,
+          config: { ...this.generationConfig, ...params.config },
         },
-        onPersistent429: async (authType?: string, error?: unknown) =>
-          await this.handleFlashFallback(authType, error),
-        authType: this.config.getContentGeneratorConfig()?.authType,
-      });
+        prompt_id,
+      );
+    };
 
-      // Resolve the internal tracking of send completion promise - `sendPromise`
-      // for both success and failure response. The actual failure is still
-      // propagated by the `await streamResponse`.
-      this.sendPromise = Promise.resolve(streamResponse)
-        .then(() => undefined)
-        .catch(() => undefined);
+    const onPersistent429Callback = async (
+      authType?: string,
+      error?: unknown,
+    ) => await handleFallback(this.config, model, authType, error);
 
-      const result = this.processStreamResponse(streamResponse, userContent);
-      return result;
-    } catch (error) {
-      this.sendPromise = Promise.resolve();
-      throw error;
-    }
+    const streamResponse = await retryWithBackoff(apiCall, {
+      shouldRetryOnError: (error: unknown) => {
+        if (error instanceof ApiError && error.message) {
+          if (error.status === 400) return false;
+          if (isSchemaDepthError(error.message)) return false;
+          if (error.status === 429) return true;
+          if (error.status >= 500 && error.status < 600) return true;
+        }
+        return false;
+      },
+      onPersistent429: onPersistent429Callback,
+      authType: this.config.getContentGeneratorConfig()?.authType,
+    });
+
+    return this.processStreamResponse(model, streamResponse);
   }
 
   /**
@@ -460,7 +398,7 @@ export class GeminiChat {
    * - The `curated history` contains only the valid turns between user and
    * model, which will be included in the subsequent requests sent to the model.
    * - The `comprehensive history` contains all turns, including invalid or
-   *   empty model outputs, providing a complete record of the history.
+   * empty model outputs, providing a complete record of the history.
    *
    * The history is updated after receiving the response from the model,
    * for streaming response, it means receiving the last chunk of the response.
@@ -469,9 +407,9 @@ export class GeminiChat {
    * history`, set the `curated` parameter to `true`.
    *
    * @param curated - whether to return the curated history or the comprehensive
-   *     history.
+   * history.
    * @return History contents alternating between user and model for the entire
-   *     chat session.
+   * chat session.
    */
   getHistory(curated: boolean = false): Content[] {
     const history = curated
@@ -491,14 +429,30 @@ export class GeminiChat {
 
   /**
    * Adds a new entry to the chat history.
-   *
-   * @param content - The content to add to the history.
    */
   addHistory(content: Content): void {
     this.history.push(content);
   }
+
   setHistory(history: Content[]): void {
     this.history = history;
+  }
+
+  stripThoughtsFromHistory(): void {
+    this.history = this.history.map((content) => {
+      const newContent = { ...content };
+      if (newContent.parts) {
+        newContent.parts = newContent.parts.map((part) => {
+          if (part && typeof part === 'object' && 'thoughtSignature' in part) {
+            const newPart = { ...part };
+            delete (newPart as { thoughtSignature?: string }).thoughtSignature;
+            return newPart;
+          }
+          return part;
+        });
+      }
+      return newContent;
+    });
   }
 
   setTools(tools: Tool[]): void {
@@ -534,154 +488,189 @@ export class GeminiChat {
   }
 
   private async *processStreamResponse(
+    model: string,
     streamResponse: AsyncGenerator<GenerateContentResponse>,
-    inputContent: Content,
-  ) {
-    const outputContent: Content[] = [];
-    const chunks: GenerateContentResponse[] = [];
-    let errorOccurred = false;
+  ): AsyncGenerator<GenerateContentResponse> {
+    const modelResponseParts: Part[] = [];
 
-    try {
-      for await (const chunk of streamResponse) {
-        if (isValidResponse(chunk)) {
-          chunks.push(chunk);
-          const content = chunk.candidates?.[0]?.content;
-          if (content !== undefined) {
-            if (this.isThoughtContent(content)) {
-              yield chunk;
-              continue;
-            }
-            outputContent.push(content);
+    let hasToolCall = false;
+    let hasFinishReason = false;
+
+    for await (const chunk of this.stopBeforeSecondMutator(streamResponse)) {
+      hasFinishReason =
+        chunk?.candidates?.some((candidate) => candidate.finishReason) ?? false;
+      if (isValidResponse(chunk)) {
+        const content = chunk.candidates?.[0]?.content;
+        if (content?.parts) {
+          if (content.parts.some((part) => part.thought)) {
+            // Record thoughts
+            this.recordThoughtFromContent(content);
           }
-        }
-        yield chunk;
-      }
-    } catch (error) {
-      errorOccurred = true;
-      throw error;
-    }
+          if (content.parts.some((part) => part.functionCall)) {
+            hasToolCall = true;
+          }
 
-    if (!errorOccurred) {
-      const allParts: Part[] = [];
-      for (const content of outputContent) {
-        if (content.parts) {
-          allParts.push(...content.parts);
-        }
-      }
-    }
-    this.recordHistory(inputContent, outputContent);
-  }
-
-  private recordHistory(
-    userInput: Content,
-    modelOutput: Content[],
-    automaticFunctionCallingHistory?: Content[],
-  ) {
-    const nonThoughtModelOutput = modelOutput.filter(
-      (content) => !this.isThoughtContent(content),
-    );
-
-    let outputContents: Content[] = [];
-    if (
-      nonThoughtModelOutput.length > 0 &&
-      nonThoughtModelOutput.every((content) => content.role !== undefined)
-    ) {
-      outputContents = nonThoughtModelOutput;
-    } else if (nonThoughtModelOutput.length === 0 && modelOutput.length > 0) {
-      // This case handles when the model returns only a thought.
-      // We don't want to add an empty model response in this case.
-    } else {
-      // When not a function response appends an empty content when model returns empty response, so that the
-      // history is always alternating between user and model.
-      // Workaround for: https://b.corp.google.com/issues/420354090
-      if (!isFunctionResponse(userInput)) {
-        outputContents.push({
-          role: 'model',
-          parts: [],
-        } as Content);
-      }
-    }
-    if (
-      automaticFunctionCallingHistory &&
-      automaticFunctionCallingHistory.length > 0
-    ) {
-      this.history.push(
-        ...extractCuratedHistory(automaticFunctionCallingHistory),
-      );
-    } else {
-      this.history.push(userInput);
-    }
-
-    // Consolidate adjacent model roles in outputContents
-    const consolidatedOutputContents: Content[] = [];
-    for (const content of outputContents) {
-      if (this.isThoughtContent(content)) {
-        continue;
-      }
-      const lastContent =
-        consolidatedOutputContents[consolidatedOutputContents.length - 1];
-      if (this.isTextContent(lastContent) && this.isTextContent(content)) {
-        // If both current and last are text, combine their text into the lastContent's first part
-        // and append any other parts from the current content.
-        lastContent.parts[0].text += content.parts[0].text || '';
-        if (content.parts.length > 1) {
-          lastContent.parts.push(...content.parts.slice(1));
-        }
-      } else {
-        consolidatedOutputContents.push(content);
-      }
-    }
-
-    if (consolidatedOutputContents.length > 0) {
-      const lastHistoryEntry = this.history[this.history.length - 1];
-      const canMergeWithLastHistory =
-        !automaticFunctionCallingHistory ||
-        automaticFunctionCallingHistory.length === 0;
-
-      if (
-        canMergeWithLastHistory &&
-        this.isTextContent(lastHistoryEntry) &&
-        this.isTextContent(consolidatedOutputContents[0])
-      ) {
-        // If both current and last are text, combine their text into the lastHistoryEntry's first part
-        // and append any other parts from the current content.
-        lastHistoryEntry.parts[0].text +=
-          consolidatedOutputContents[0].parts[0].text || '';
-        if (consolidatedOutputContents[0].parts.length > 1) {
-          lastHistoryEntry.parts.push(
-            ...consolidatedOutputContents[0].parts.slice(1),
+          modelResponseParts.push(
+            ...content.parts.filter((part) => !part.thought),
           );
         }
-        consolidatedOutputContents.shift(); // Remove the first element as it's merged
       }
-      this.history.push(...consolidatedOutputContents);
+
+      // Record token usage if this chunk has usageMetadata
+      if (chunk.usageMetadata) {
+        this.chatRecordingService.recordMessageTokens(chunk.usageMetadata);
+        if (chunk.usageMetadata.promptTokenCount !== undefined) {
+          uiTelemetryService.setLastPromptTokenCount(
+            chunk.usageMetadata.promptTokenCount,
+          );
+        }
+      }
+
+      yield chunk; // Yield every chunk to the UI immediately.
+    }
+
+    // String thoughts and consolidate text parts.
+    const consolidatedParts: Part[] = [];
+    for (const part of modelResponseParts) {
+      const lastPart = consolidatedParts[consolidatedParts.length - 1];
+      if (
+        lastPart?.text &&
+        isValidNonThoughtTextPart(lastPart) &&
+        isValidNonThoughtTextPart(part)
+      ) {
+        lastPart.text += part.text;
+      } else {
+        consolidatedParts.push(part);
+      }
+    }
+
+    const responseText = consolidatedParts
+      .filter((part) => part.text)
+      .map((part) => part.text)
+      .join('')
+      .trim();
+
+    // Record model response text from the collected parts
+    if (responseText) {
+      this.chatRecordingService.recordMessage({
+        model,
+        type: 'gemini',
+        content: responseText,
+      });
+    }
+
+    // Stream validation logic: A stream is considered successful if:
+    // 1. There's a tool call (tool calls can end without explicit finish reasons), OR
+    // 2. There's a finish reason AND we have non-empty response text
+    //
+    // We throw an error only when there's no tool call AND:
+    // - No finish reason, OR
+    // - Empty response text (e.g., only thoughts with no actual content)
+    if (!hasToolCall && (!hasFinishReason || !responseText)) {
+      if (!hasFinishReason) {
+        throw new InvalidStreamError(
+          'Model stream ended without a finish reason.',
+          'NO_FINISH_REASON',
+        );
+      } else {
+        throw new InvalidStreamError(
+          'Model stream ended with empty response text.',
+          'NO_RESPONSE_TEXT',
+        );
+      }
+    }
+
+    this.history.push({ role: 'model', parts: consolidatedParts });
+  }
+
+  /**
+   * Gets the chat recording service instance.
+   */
+  getChatRecordingService(): ChatRecordingService {
+    return this.chatRecordingService;
+  }
+
+  /**
+   * Extracts and records thought from thought content.
+   */
+  private recordThoughtFromContent(content: Content): void {
+    if (!content.parts || content.parts.length === 0) {
+      return;
+    }
+
+    const thoughtPart = content.parts[0];
+    if (thoughtPart.text) {
+      // Extract subject and description using the same logic as turn.ts
+      const rawText = thoughtPart.text;
+      const subjectStringMatches = rawText.match(/\*\*(.*?)\*\*/s);
+      const subject = subjectStringMatches
+        ? subjectStringMatches[1].trim()
+        : '';
+      const description = rawText.replace(/\*\*(.*?)\*\*/s, '').trim();
+
+      this.chatRecordingService.recordThought({
+        subject,
+        description,
+      });
     }
   }
 
-  private isTextContent(
-    content: Content | undefined,
-  ): content is Content & { parts: [{ text: string }, ...Part[]] } {
-    return !!(
-      content &&
-      content.role === 'model' &&
-      content.parts &&
-      content.parts.length > 0 &&
-      typeof content.parts[0].text === 'string' &&
-      content.parts[0].text !== ''
-    );
+  /**
+   * Truncates the chunkStream right before the second function call to a
+   * function that mutates state. This may involve trimming parts from a chunk
+   * as well as omtting some chunks altogether.
+   *
+   * We do this because it improves tool call quality if the model gets
+   * feedback from one mutating function call before it makes the next one.
+   */
+  private async *stopBeforeSecondMutator(
+    chunkStream: AsyncGenerator<GenerateContentResponse>,
+  ): AsyncGenerator<GenerateContentResponse> {
+    let foundMutatorFunctionCall = false;
+
+    for await (const chunk of chunkStream) {
+      const candidate = chunk.candidates?.[0];
+      const content = candidate?.content;
+      if (!candidate || !content?.parts) {
+        yield chunk;
+        continue;
+      }
+
+      const truncatedParts: Part[] = [];
+      for (const part of content.parts) {
+        if (this.isMutatorFunctionCall(part)) {
+          if (foundMutatorFunctionCall) {
+            // This is the second mutator call.
+            // Truncate and return immedaitely.
+            const newChunk = new GenerateContentResponse();
+            newChunk.candidates = [
+              {
+                ...candidate,
+                content: {
+                  ...content,
+                  parts: truncatedParts,
+                },
+                finishReason: FinishReason.STOP,
+              },
+            ];
+            yield newChunk;
+            return;
+          }
+          foundMutatorFunctionCall = true;
+        }
+        truncatedParts.push(part);
+      }
+
+      yield chunk;
+    }
   }
 
-  private isThoughtContent(
-    content: Content | undefined,
-  ): content is Content & { parts: [{ thought: boolean }, ...Part[]] } {
-    return !!(
-      content &&
-      content.role === 'model' &&
-      content.parts &&
-      content.parts.length > 0 &&
-      typeof content.parts[0].thought === 'boolean' &&
-      content.parts[0].thought === true
-    );
+  private isMutatorFunctionCall(part: Part): boolean {
+    if (!part?.functionCall?.name) {
+      return false;
+    }
+    const tool = this.config.getToolRegistry().getTool(part.functionCall.name);
+    return !!tool && MUTATOR_KINDS.includes(tool.kind);
   }
 }
 

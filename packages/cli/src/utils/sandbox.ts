@@ -9,14 +9,17 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { quote, parse } from 'shell-quote';
 import {
   USER_SETTINGS_DIR,
   SETTINGS_DIRECTORY_NAME,
 } from '../config/settings.js';
-import { promisify } from 'util';
-import { Config, SandboxConfig } from '@google/gemini-cli-core';
+import { promisify } from 'node:util';
+import type { Config, SandboxConfig } from '@google/gemini-cli-core';
+import { FatalSandboxError } from '@google/gemini-cli-core';
 import { ConsolePatcher } from '../ui/utils/ConsolePatcher.js';
+import { randomBytes } from 'node:crypto';
 
 const execAsync = promisify(exec);
 
@@ -24,6 +27,7 @@ function getContainerPath(hostPath: string): string {
   if (os.platform() !== 'win32') {
     return hostPath;
   }
+
   const withForwardSlashes = hostPath.replace(/\\/g, '/');
   const match = withForwardSlashes.match(/^([A-Z]):\/(.*)/i);
   if (match) {
@@ -114,7 +118,7 @@ function ports(): string[] {
     .map((p) => p.trim());
 }
 
-function entrypoint(workdir: string): string[] {
+function entrypoint(workdir: string, cliArgs: string[]): string[] {
   const isWindows = os.platform() === 'win32';
   const containerWorkdir = getContainerPath(workdir);
   const shellCmds = [];
@@ -166,7 +170,7 @@ function entrypoint(workdir: string): string[] {
     ),
   );
 
-  const cliArgs = process.argv.slice(2).map((arg) => quote([arg]));
+  const quotedCliArgs = cliArgs.slice(2).map((arg) => quote([arg]));
   const cliCmd =
     process.env['NODE_ENV'] === 'development'
       ? process.env['DEBUG']
@@ -176,8 +180,7 @@ function entrypoint(workdir: string): string[] {
         ? `node --inspect-brk=0.0.0.0:${process.env['DEBUG_PORT'] || '9229'} $(which gemini)`
         : 'gemini';
 
-  const args = [...shellCmds, cliCmd, ...cliArgs];
-
+  const args = [...shellCmds, cliCmd, ...quotedCliArgs];
   return ['bash', '-c', args.join(' ')];
 }
 
@@ -185,7 +188,8 @@ export async function start_sandbox(
   config: SandboxConfig,
   nodeArgs: string[] = [],
   cliConfig?: Config,
-) {
+  cliArgs: string[] = [],
+): Promise<number> {
   const patcher = new ConsolePatcher({
     debugMode: cliConfig?.getDebugMode() || !!process.env['DEBUG'],
     stderr: true,
@@ -196,12 +200,15 @@ export async function start_sandbox(
     if (config.command === 'sandbox-exec') {
       // disallow BUILD_SANDBOX
       if (process.env['BUILD_SANDBOX']) {
-        console.error('ERROR: cannot BUILD_SANDBOX when using macOS Seatbelt');
-        process.exit(1);
+        throw new FatalSandboxError(
+          'Cannot BUILD_SANDBOX when using macOS Seatbelt',
+        );
       }
+
       const profile = (process.env['SEATBELT_PROFILE'] ??= 'permissive-open');
-      let profileFile = new URL(`sandbox-macos-${profile}.sb`, import.meta.url)
-        .pathname;
+      let profileFile = fileURLToPath(
+        new URL(`sandbox-macos-${profile}.sb`, import.meta.url),
+      );
       // if profile name is not recognized, then look for file under project settings directory
       if (!BUILTIN_SEATBELT_PROFILES.includes(profile)) {
         profileFile = path.join(
@@ -210,10 +217,9 @@ export async function start_sandbox(
         );
       }
       if (!fs.existsSync(profileFile)) {
-        console.error(
-          `ERROR: missing macos seatbelt profile file '${profileFile}'`,
+        throw new FatalSandboxError(
+          `Missing macos seatbelt profile file '${profileFile}'`,
         );
-        process.exit(1);
       }
       // Log on STDERR so it doesn't clutter the output on STDOUT
       console.error(`using macos seatbelt (profile: ${profile}) ...`);
@@ -263,6 +269,8 @@ export async function start_sandbox(
         args.push('-D', `INCLUDE_DIR_${i}=${dirPath}`);
       }
 
+      const finalArgv = cliArgs;
+
       args.push(
         '-f',
         profileFile,
@@ -271,7 +279,7 @@ export async function start_sandbox(
         [
           `SANDBOX=sandbox-exec`,
           `NODE_OPTIONS="${nodeOptions}"`,
-          ...process.argv.map((arg) => quote([arg])),
+          ...finalArgv.map((arg) => quote([arg])),
         ].join(' '),
       );
       // start and set up proxy if GEMINI_SANDBOX_PROXY_COMMAND is set
@@ -319,13 +327,12 @@ export async function start_sandbox(
           console.error(data.toString());
         });
         proxyProcess.on('close', (code, signal) => {
-          console.error(
-            `ERROR: proxy command '${proxyCommand}' exited with code ${code}, signal ${signal}`,
-          );
           if (sandboxProcess?.pid) {
             process.kill(-sandboxProcess.pid, 'SIGTERM');
           }
-          process.exit(1);
+          throw new FatalSandboxError(
+            `Proxy command '${proxyCommand}' exited with code ${code}, signal ${signal}`,
+          );
         });
         console.log('waiting for proxy to start ...');
         await execAsync(
@@ -333,11 +340,17 @@ export async function start_sandbox(
         );
       }
       // spawn child and let it inherit stdio
+      process.stdin.pause();
       sandboxProcess = spawn(config.command, args, {
         stdio: 'inherit',
       });
-      await new Promise((resolve) => sandboxProcess?.on('close', resolve));
-      return;
+      return new Promise((resolve, reject) => {
+        sandboxProcess?.on('error', reject);
+        sandboxProcess?.on('close', (code) => {
+          process.stdin.resume();
+          resolve(code ?? 1);
+        });
+      });
     }
 
     console.error(`hopping into sandbox (command: ${config.command}) ...`);
@@ -360,11 +373,10 @@ export async function start_sandbox(
     // note this can only be done with binary linked from gemini-cli repo
     if (process.env['BUILD_SANDBOX']) {
       if (!gcPath.includes('gemini-cli/packages/')) {
-        console.error(
-          'ERROR: cannot build sandbox using installed gemini binary; ' +
+        throw new FatalSandboxError(
+          'Cannot build sandbox using installed gemini binary; ' +
             'run `npm link ./packages/cli` under gemini-cli repo to switch to linked binary.',
         );
-        process.exit(1);
       } else {
         console.error('building sandbox ...');
         const gcRoot = gcPath.split('/packages/')[0];
@@ -397,10 +409,9 @@ export async function start_sandbox(
         image === LOCAL_DEV_SANDBOX_IMAGE_NAME
           ? 'Try running `npm run build:all` or `npm run build:sandbox` under the gemini-cli repo to build it locally, or check the image name and your network connection.'
           : 'Please check the image name, your network connection, or notify gemini-cli-dev@google.com if the issue persists.';
-      console.error(
-        `ERROR: Sandbox image '${image}' is missing or could not be pulled. ${remedy}`,
+      throw new FatalSandboxError(
+        `Sandbox image '${image}' is missing or could not be pulled. ${remedy}`,
       );
-      process.exit(1);
     }
 
     // use interactive mode and auto-remove container on exit
@@ -419,6 +430,9 @@ export async function start_sandbox(
     if (process.stdin.isTTY) {
       args.push('-t');
     }
+
+    // allow access to host.docker.internal
+    args.push('--add-host', 'host.docker.internal:host-gateway');
 
     // mount current directory as working directory in sandbox (set via --workdir)
     args.push('--volume', `${workdir}:${containerWorkdir}`);
@@ -478,17 +492,15 @@ export async function start_sandbox(
           mount = `${from}:${to}:${opts}`;
           // check that from path is absolute
           if (!path.isAbsolute(from)) {
-            console.error(
-              `ERROR: path '${from}' listed in SANDBOX_MOUNTS must be absolute`,
+            throw new FatalSandboxError(
+              `Path '${from}' listed in SANDBOX_MOUNTS must be absolute`,
             );
-            process.exit(1);
           }
           // check that from path exists on host
           if (!fs.existsSync(from)) {
-            console.error(
-              `ERROR: missing mount path '${from}' listed in SANDBOX_MOUNTS`,
+            throw new FatalSandboxError(
+              `Missing mount path '${from}' listed in SANDBOX_MOUNTS`,
             );
-            process.exit(1);
           }
           console.error(`SANDBOX_MOUNTS: ${from} -> ${to} (${opts})`);
           args.push('--volume', mount);
@@ -547,19 +559,38 @@ export async function start_sandbox(
       }
     }
 
-    // name container after image, plus numeric suffix to avoid conflicts
+    // name container after image, plus random suffix to avoid conflicts
     const imageName = parseImageName(image);
-    let index = 0;
-    const containerNameCheck = execSync(
-      `${config.command} ps -a --format "{{.Names}}"`,
-    )
-      .toString()
-      .trim();
-    while (containerNameCheck.includes(`${imageName}-${index}`)) {
-      index++;
+    const isIntegrationTest =
+      process.env['GEMINI_CLI_INTEGRATION_TEST'] === 'true';
+    let containerName;
+    if (isIntegrationTest) {
+      containerName = `gemini-cli-integration-test-${randomBytes(4).toString(
+        'hex',
+      )}`;
+      console.log(`ContainerName: ${containerName}`);
+    } else {
+      let index = 0;
+      const containerNameCheck = execSync(
+        `${config.command} ps -a --format "{{.Names}}"`,
+      )
+        .toString()
+        .trim();
+      while (containerNameCheck.includes(`${imageName}-${index}`)) {
+        index++;
+      }
+      containerName = `${imageName}-${index}`;
+      console.log(`ContainerName (regular): ${containerName}`);
     }
-    const containerName = `${imageName}-${index}`;
     args.push('--name', containerName, '--hostname', containerName);
+
+    // copy GEMINI_CLI_TEST_VAR for integration tests
+    if (process.env['GEMINI_CLI_TEST_VAR']) {
+      args.push(
+        '--env',
+        `GEMINI_CLI_TEST_VAR=${process.env['GEMINI_CLI_TEST_VAR']}`,
+      );
+    }
 
     // copy GEMINI_API_KEY(s)
     if (process.env['GEMINI_API_KEY']) {
@@ -659,10 +690,9 @@ export async function start_sandbox(
             console.error(`SANDBOX_ENV: ${env}`);
             args.push('--env', env);
           } else {
-            console.error(
-              'ERROR: SANDBOX_ENV must be a comma-separated list of key=value pairs',
+            throw new FatalSandboxError(
+              'SANDBOX_ENV must be a comma-separated list of key=value pairs',
             );
-            process.exit(1);
           }
         }
       }
@@ -692,7 +722,7 @@ export async function start_sandbox(
     // Determine if the current user's UID/GID should be passed to the sandbox.
     // See shouldUseCurrentUserInSandbox for more details.
     let userFlag = '';
-    const finalEntrypoint = entrypoint(workdir);
+    const finalEntrypoint = entrypoint(workdir, cliArgs);
 
     if (process.env['GEMINI_CLI_INTEGRATION_TEST'] === 'true') {
       args.push('--user', 'root');
@@ -770,13 +800,12 @@ export async function start_sandbox(
         console.error(data.toString().trim());
       });
       proxyProcess.on('close', (code, signal) => {
-        console.error(
-          `ERROR: proxy container command '${proxyContainerCommand}' exited with code ${code}, signal ${signal}`,
-        );
         if (sandboxProcess?.pid) {
           process.kill(-sandboxProcess.pid, 'SIGTERM');
         }
-        process.exit(1);
+        throw new FatalSandboxError(
+          `Proxy container command '${proxyContainerCommand}' exited with code ${code}, signal ${signal}`,
+        );
       });
       console.log('waiting for proxy to start ...');
       await execAsync(
@@ -790,22 +819,25 @@ export async function start_sandbox(
     }
 
     // spawn child and let it inherit stdio
+    process.stdin.pause();
     sandboxProcess = spawn(config.command, args, {
       stdio: 'inherit',
     });
 
-    sandboxProcess.on('error', (err) => {
-      console.error('Sandbox process error:', err);
-    });
+    return new Promise<number>((resolve, reject) => {
+      sandboxProcess.on('error', (err) => {
+        console.error('Sandbox process error:', err);
+        reject(err);
+      });
 
-    await new Promise<void>((resolve) => {
       sandboxProcess?.on('close', (code, signal) => {
-        if (code !== 0) {
+        process.stdin.resume();
+        if (code !== 0 && code !== null) {
           console.log(
             `Sandbox process exited with code: ${code}, signal: ${signal}`,
           );
         }
-        resolve();
+        resolve(code ?? 1);
       });
     });
   } finally {

@@ -4,22 +4,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
+import type {
   CountTokensResponse,
   GenerateContentResponse,
   GenerateContentParameters,
   CountTokensParameters,
   EmbedContentResponse,
   EmbedContentParameters,
-  GoogleGenAI,
 } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { createCodeAssistContentGenerator } from '../code_assist/codeAssist.js';
+import type { Config } from '../config/config.js';
 import { DEFAULT_GEMINI_MODEL } from '../config/models.js';
-import { Config } from '../config/config.js';
 
-import { UserTierId } from '../code_assist/types.js';
+import type { UserTierId } from '../code_assist/types.js';
 import { LoggingContentGenerator } from './loggingContentGenerator.js';
-import { getInstallationId } from '../utils/user_id.js';
+import { InstallationManager } from '../utils/installationManager.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -51,7 +51,7 @@ export enum AuthType {
 }
 
 export type ContentGeneratorConfig = {
-  model: string;
+  model?: string;
   apiKey?: string;
   vertexai?: boolean;
   authType?: AuthType | undefined;
@@ -82,11 +82,8 @@ export function createContentGeneratorConfig(
 
   const openAiApiKey = process.env['OPENAI_API_KEY'] || undefined;
 
-  // Use runtime model from config if available; otherwise, fall back to parameter or default
-  const effectiveModel = config.getModel() || DEFAULT_GEMINI_MODEL;
-
   const contentGeneratorConfig: ContentGeneratorConfig = {
-    model: effectiveModel,
+    model: config.getModel() || DEFAULT_GEMINI_MODEL,
     authType,
     proxy: config?.getProxy(),
   };
@@ -156,7 +153,8 @@ export async function createContentGenerator(
   ) {
     let headers: Record<string, string> = { ...baseHeaders };
     if (gcConfig?.getUsageStatisticsEnabled()) {
-      const installationId = getInstallationId();
+      const installationManager = new InstallationManager();
+      const installationId = installationManager.getInstallationId();
       headers = {
         ...headers,
         'x-gemini-api-privileged-user-id': `${installationId}`,
@@ -183,7 +181,11 @@ export async function createContentGenerator(
     );
 
     // Always use OpenAIContentGenerator, logging is controlled by enableOpenAILogging flag
-    return new OpenAIContentGenerator(config.apiKey, config.model, gcConfig);
+    return new OpenAIContentGenerator(
+      config.apiKey,
+      config.model || gcConfig.getModel() || DEFAULT_GEMINI_MODEL,
+      gcConfig,
+    );
   }
   throw new Error(
     `Error creating contentGenerator: Unsupported authType: ${config.authType}`,
