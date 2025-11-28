@@ -98,7 +98,7 @@ export async function handleFallback(
         }
 
         // If key wasn't rotated, respect the intent from external handler
-        if (intent === 'retry') {
+        if (intent === 'retry_always' || intent === 'retry_once') {
           return true;
         }
         if (intent === 'stop') {

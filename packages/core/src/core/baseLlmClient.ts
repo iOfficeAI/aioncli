@@ -167,14 +167,17 @@ export class BaseLlmClient {
     options: GenerateJsonOptions,
   ): Promise<Record<string, unknown>> {
     const {
+      modelConfigKey,
       contents,
       schema,
-      model,
       abortSignal,
       systemInstruction,
       promptId,
       maxAttempts,
     } = options;
+
+    const { model, generateContentConfig } =
+      this.config.modelConfigService.getResolvedConfig(modelConfigKey);
 
     try {
       // Create function declaration for OpenAI-style response
@@ -192,8 +195,7 @@ export class BaseLlmClient {
 
       const requestConfig: GenerateContentConfig = {
         abortSignal,
-        ...this.defaultUtilityConfig,
-        ...options.config,
+        ...generateContentConfig,
         ...(systemInstruction && { systemInstruction }),
         tools,
       };

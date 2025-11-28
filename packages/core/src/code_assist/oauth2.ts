@@ -446,13 +446,11 @@ async function authWithWeb(
           );
         } else if (qs.get('code')) {
           try {
-
             const { tokens } = await client.getToken({
               code: qs.get('code')!,
               redirect_uri: redirectUri,
             });
             client.setCredentials(tokens);
-
 
             // Retrieve and cache Google Account ID during authentication
             try {
@@ -642,13 +640,11 @@ async function fetchAndCacheUserInfo(
       return;
     }
 
-
     const userInfo = (await response.json()) as { email?: string };
     if (userInfo.email) {
       await userAccountManager.cacheGoogleAccount(userInfo.email);
       return { email: userInfo.email };
     }
-
   } catch (error) {
     debugLogger.log('Error retrieving user info:', error);
   }
@@ -680,7 +676,9 @@ export async function getOauthInfoWithCache(
   });
 
   // If there are cached creds on disk, they always take precedence
-  if (await loadCachedCredentials(client)) {
+  const cachedCreds = await fetchCachedCredentials();
+  if (cachedCreds) {
+    client.setCredentials(cachedCreds);
     // Found valid cached credentials.
     // Check if we need to retrieve Google Account ID or Email
     const cachedGoogleAccount = userAccountManager.getCachedGoogleAccount();
