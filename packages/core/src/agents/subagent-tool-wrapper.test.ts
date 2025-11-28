@@ -12,6 +12,7 @@ import { makeFakeConfig } from '../test-utils/config.js';
 import type { AgentDefinition, AgentInputs } from './types.js';
 import type { Config } from '../config/config.js';
 import { Kind } from '../tools/tools.js';
+import type { MessageBus } from '../confirmation-bus/message-bus.js';
 
 // Mock dependencies to isolate the SubagentToolWrapper class
 vi.mock('./invocation.js');
@@ -66,8 +67,7 @@ describe('SubagentToolWrapper', () => {
     it('should call convertInputConfigToJsonSchema with the correct agent inputConfig', () => {
       new SubagentToolWrapper(mockDefinition, mockConfig);
 
-      expect(convertInputConfigToJsonSchema).toHaveBeenCalledOnce();
-      expect(convertInputConfigToJsonSchema).toHaveBeenCalledWith(
+      expect(convertInputConfigToJsonSchema).toHaveBeenCalledExactlyOnceWith(
         mockDefinition.inputConfig,
       );
     });
@@ -114,11 +114,30 @@ describe('SubagentToolWrapper', () => {
       const invocation = wrapper.build(params);
 
       expect(invocation).toBeInstanceOf(SubagentInvocation);
-      expect(MockedSubagentInvocation).toHaveBeenCalledOnce();
+      expect(MockedSubagentInvocation).toHaveBeenCalledExactlyOnceWith(
+        params,
+        mockDefinition,
+        mockConfig,
+        undefined,
+      );
+    });
+
+    it('should pass the messageBus to the SubagentInvocation constructor', () => {
+      const mockMessageBus = {} as MessageBus;
+      const wrapper = new SubagentToolWrapper(
+        mockDefinition,
+        mockConfig,
+        mockMessageBus,
+      );
+      const params: AgentInputs = { goal: 'Test the invocation', priority: 1 };
+
+      wrapper.build(params);
+
       expect(MockedSubagentInvocation).toHaveBeenCalledWith(
         params,
         mockDefinition,
         mockConfig,
+        mockMessageBus,
       );
     });
 

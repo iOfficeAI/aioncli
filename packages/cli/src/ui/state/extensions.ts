@@ -4,11 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { ExtensionUpdateInfo } from '../../config/extension.js';
 import { checkExhaustive } from '../../utils/checks.js';
 
 export enum ExtensionUpdateState {
   CHECKING_FOR_UPDATES = 'checking for updates',
   UPDATED_NEEDS_RESTART = 'updated, needs restart',
+  UPDATED = 'updated',
   UPDATING = 'updating',
   UPDATE_AVAILABLE = 'update available',
   UP_TO_DATE = 'up to date',
@@ -19,17 +21,34 @@ export enum ExtensionUpdateState {
 
 export interface ExtensionUpdateStatus {
   status: ExtensionUpdateState;
-  processed: boolean;
+  notified: boolean;
 }
 
 export interface ExtensionUpdatesState {
   extensionStatuses: Map<string, ExtensionUpdateStatus>;
   batchChecksInProgress: number;
+  // Explicitly scheduled updates.
+  scheduledUpdate: ScheduledUpdate | null;
 }
+
+export interface ScheduledUpdate {
+  names: string[] | null;
+  all: boolean;
+  onCompleteCallbacks: OnCompleteUpdate[];
+}
+
+export interface ScheduleUpdateArgs {
+  names: string[] | null;
+  all: boolean;
+  onComplete: OnCompleteUpdate;
+}
+
+type OnCompleteUpdate = (updateInfos: ExtensionUpdateInfo[]) => void;
 
 export const initialExtensionUpdatesState: ExtensionUpdatesState = {
   extensionStatuses: new Map(),
   batchChecksInProgress: 0,
+  scheduledUpdate: null,
 };
 
 export type ExtensionUpdateAction =
@@ -38,11 +57,14 @@ export type ExtensionUpdateAction =
       payload: { name: string; state: ExtensionUpdateState };
     }
   | {
-      type: 'SET_PROCESSED';
-      payload: { name: string; processed: boolean };
+      type: 'SET_NOTIFIED';
+      payload: { name: string; notified: boolean };
     }
   | { type: 'BATCH_CHECK_START' }
-  | { type: 'BATCH_CHECK_END' };
+  | { type: 'BATCH_CHECK_END' }
+  | { type: 'SCHEDULE_UPDATE'; payload: ScheduleUpdateArgs }
+  | { type: 'CLEAR_SCHEDULED_UPDATE' }
+  | { type: 'RESTARTED'; payload: { name: string } };
 
 export function extensionUpdatesReducer(
   state: ExtensionUpdatesState,
@@ -57,19 +79,19 @@ export function extensionUpdatesReducer(
       const newStatuses = new Map(state.extensionStatuses);
       newStatuses.set(action.payload.name, {
         status: action.payload.state,
-        processed: false,
+        notified: false,
       });
       return { ...state, extensionStatuses: newStatuses };
     }
-    case 'SET_PROCESSED': {
+    case 'SET_NOTIFIED': {
       const existing = state.extensionStatuses.get(action.payload.name);
-      if (!existing || existing.processed === action.payload.processed) {
+      if (!existing || existing.notified === action.payload.notified) {
         return state;
       }
       const newStatuses = new Map(state.extensionStatuses);
       newStatuses.set(action.payload.name, {
         ...existing,
-        processed: action.payload.processed,
+        notified: action.payload.notified,
       });
       return { ...state, extensionStatuses: newStatuses };
     }
@@ -83,6 +105,41 @@ export function extensionUpdatesReducer(
         ...state,
         batchChecksInProgress: state.batchChecksInProgress - 1,
       };
+    case 'SCHEDULE_UPDATE':
+      return {
+        ...state,
+        // If there is a pre-existing scheduled update, we merge them.
+        scheduledUpdate: {
+          all: state.scheduledUpdate?.all || action.payload.all,
+          names: [
+            ...(state.scheduledUpdate?.names ?? []),
+            ...(action.payload.names ?? []),
+          ],
+          onCompleteCallbacks: [
+            ...(state.scheduledUpdate?.onCompleteCallbacks ?? []),
+            action.payload.onComplete,
+          ],
+        },
+      };
+    case 'CLEAR_SCHEDULED_UPDATE':
+      return {
+        ...state,
+        scheduledUpdate: null,
+      };
+    case 'RESTARTED': {
+      const existing = state.extensionStatuses.get(action.payload.name);
+      if (existing?.status !== ExtensionUpdateState.UPDATED_NEEDS_RESTART) {
+        return state;
+      }
+
+      const newStatuses = new Map(state.extensionStatuses);
+      newStatuses.set(action.payload.name, {
+        ...existing,
+        status: ExtensionUpdateState.UPDATED,
+      });
+
+      return { ...state, extensionStatuses: newStatuses };
+    }
     default:
       checkExhaustive(action);
   }

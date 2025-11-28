@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { GeminiCLIExtension } from '@google/gemini-cli-core';
+import { debugLogger, type GeminiCLIExtension } from '@google/gemini-cli-core';
 import { getErrorMessage } from '../../utils/errors.js';
 import {
   ExtensionUpdateState,
@@ -18,8 +18,9 @@ import {
   checkForAllExtensionUpdates,
   updateExtension,
 } from '../../config/extensions/update.js';
-import { requestConsentInteractive } from '../../config/extension.js';
+import { type ExtensionUpdateInfo } from '../../config/extension.js';
 import { checkExhaustive } from '../../utils/checks.js';
+import type { ExtensionManager } from '../../config/extension-manager.js';
 
 type ConfirmationRequestWrapper = {
   prompt: React.ReactNode;
@@ -41,19 +42,10 @@ function confirmationRequestsReducer(
       return state.filter((r) => r !== action.request);
     default:
       checkExhaustive(action);
-      return state;
   }
 }
 
-export const useExtensionUpdates = (
-  extensions: GeminiCLIExtension[],
-  addItem: UseHistoryManagerReturn['addItem'],
-  cwd: string,
-) => {
-  const [extensionsUpdateState, dispatchExtensionStateUpdate] = useReducer(
-    extensionUpdatesReducer,
-    initialExtensionUpdatesState,
-  );
+export const useConfirmUpdateRequests = () => {
   const [
     confirmUpdateExtensionRequests,
     dispatchConfirmUpdateExtensionRequests,
@@ -78,52 +70,104 @@ export const useExtensionUpdates = (
     },
     [dispatchConfirmUpdateExtensionRequests],
   );
+  return {
+    addConfirmUpdateExtensionRequest,
+    confirmUpdateExtensionRequests,
+    dispatchConfirmUpdateExtensionRequests,
+  };
+};
+
+export const useExtensionUpdates = (
+  extensionManager: ExtensionManager,
+  addItem: UseHistoryManagerReturn['addItem'],
+  enableExtensionReloading: boolean,
+) => {
+  const [extensionsUpdateState, dispatchExtensionStateUpdate] = useReducer(
+    extensionUpdatesReducer,
+    initialExtensionUpdatesState,
+  );
+  const extensions = extensionManager.getExtensions();
 
   useEffect(() => {
-    (async () => {
-      await checkForAllExtensionUpdates(
-        extensions,
-        dispatchExtensionStateUpdate,
+    const extensionsToCheck = extensions.filter((extension) => {
+      const currentStatus = extensionsUpdateState.extensionStatuses.get(
+        extension.name,
       );
-    })();
-  }, [extensions, extensions.length, dispatchExtensionStateUpdate]);
+      if (!currentStatus) return true;
+      const currentState = currentStatus.status;
+      return !currentState || currentState === ExtensionUpdateState.UNKNOWN;
+    });
+    if (extensionsToCheck.length === 0) return;
+    checkForAllExtensionUpdates(
+      extensionsToCheck,
+      extensionManager,
+      dispatchExtensionStateUpdate,
+    );
+  }, [
+    extensions,
+    extensionManager,
+    extensionsUpdateState.extensionStatuses,
+    dispatchExtensionStateUpdate,
+  ]);
 
   useEffect(() => {
     if (extensionsUpdateState.batchChecksInProgress > 0) {
       return;
     }
+    const scheduledUpdate = extensionsUpdateState.scheduledUpdate;
+    if (scheduledUpdate) {
+      dispatchExtensionStateUpdate({
+        type: 'CLEAR_SCHEDULED_UPDATE',
+      });
+    }
+
+    function shouldDoUpdate(extension: GeminiCLIExtension): boolean {
+      if (scheduledUpdate) {
+        if (scheduledUpdate.all) {
+          return true;
+        }
+        return scheduledUpdate.names?.includes(extension.name) === true;
+      } else {
+        return extension.installMetadata?.autoUpdate === true;
+      }
+    }
 
     let extensionsWithUpdatesCount = 0;
+    // We only notify if we have unprocessed extensions in the UPDATE_AVAILABLE
+    // state.
+    let shouldNotifyOfUpdates = false;
+    const updatePromises: Array<Promise<ExtensionUpdateInfo | undefined>> = [];
     for (const extension of extensions) {
       const currentState = extensionsUpdateState.extensionStatuses.get(
         extension.name,
       );
       if (
         !currentState ||
-        currentState.processed ||
         currentState.status !== ExtensionUpdateState.UPDATE_AVAILABLE
       ) {
         continue;
       }
-
-      // Mark as processed immediately to avoid re-triggering.
-      dispatchExtensionStateUpdate({
-        type: 'SET_PROCESSED',
-        payload: { name: extension.name, processed: true },
-      });
-
-      if (extension.installMetadata?.autoUpdate) {
-        updateExtension(
+      const shouldUpdate = shouldDoUpdate(extension);
+      if (!shouldUpdate) {
+        extensionsWithUpdatesCount++;
+        if (!currentState.notified) {
+          // Mark as processed immediately to avoid re-triggering.
+          dispatchExtensionStateUpdate({
+            type: 'SET_NOTIFIED',
+            payload: { name: extension.name, notified: true },
+          });
+          shouldNotifyOfUpdates = true;
+        }
+      } else {
+        const updatePromise = updateExtension(
           extension,
-          cwd,
-          (description) =>
-            requestConsentInteractive(
-              description,
-              addConfirmUpdateExtensionRequest,
-            ),
+          extensionManager,
           currentState.status,
           dispatchExtensionStateUpdate,
-        )
+          enableExtensionReloading,
+        );
+        updatePromises.push(updatePromise);
+        updatePromise
           .then((result) => {
             if (!result) return;
             addItem(
@@ -143,11 +187,9 @@ export const useExtensionUpdates = (
               Date.now(),
             );
           });
-      } else {
-        extensionsWithUpdatesCount++;
       }
     }
-    if (extensionsWithUpdatesCount > 0) {
+    if (shouldNotifyOfUpdates) {
       const s = extensionsWithUpdatesCount > 1 ? 's' : '';
       addItem(
         {
@@ -157,12 +199,24 @@ export const useExtensionUpdates = (
         Date.now(),
       );
     }
+    if (scheduledUpdate) {
+      Promise.all(updatePromises).then((results) => {
+        const nonNullResults = results.filter((result) => result != null);
+        scheduledUpdate.onCompleteCallbacks.forEach((callback) => {
+          try {
+            callback(nonNullResults);
+          } catch (e) {
+            debugLogger.warn(getErrorMessage(e));
+          }
+        });
+      });
+    }
   }, [
     extensions,
+    extensionManager,
     extensionsUpdateState,
-    addConfirmUpdateExtensionRequest,
     addItem,
-    cwd,
+    enableExtensionReloading,
   ]);
 
   const extensionsUpdateStateComputed = useMemo(() => {
@@ -180,7 +234,5 @@ export const useExtensionUpdates = (
     extensionsUpdateState: extensionsUpdateStateComputed,
     extensionsUpdateStateInternal: extensionsUpdateState.extensionStatuses,
     dispatchExtensionStateUpdate,
-    confirmUpdateExtensionRequests,
-    addConfirmUpdateExtensionRequest,
   };
 };

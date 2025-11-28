@@ -7,25 +7,39 @@
 import type { Config } from '../config/config.js';
 import { reportError } from '../utils/errorReporting.js';
 import { GeminiChat, StreamEventType } from '../core/geminiChat.js';
+import { Type } from '@google/genai';
 import type {
   Content,
   Part,
   FunctionCall,
-  GenerateContentConfig,
   FunctionDeclaration,
+  Schema,
 } from '@google/genai';
 import { executeToolCall } from '../core/nonInteractiveToolExecutor.js';
 import { ToolRegistry } from '../tools/tool-registry.js';
-import type { ToolCallRequestInfo } from '../core/turn.js';
+import { type ToolCallRequestInfo, CompressionStatus } from '../core/turn.js';
+import { ChatCompressionService } from '../services/chatCompressionService.js';
 import { getDirectoryContextString } from '../utils/environmentContext.js';
-import { GlobTool } from '../tools/glob.js';
-import { GrepTool } from '../tools/grep.js';
-import { RipGrepTool } from '../tools/ripGrep.js';
-import { LSTool } from '../tools/ls.js';
-import { MemoryTool } from '../tools/memoryTool.js';
-import { ReadFileTool } from '../tools/read-file.js';
-import { ReadManyFilesTool } from '../tools/read-many-files.js';
-import { WebSearchTool } from '../tools/web-search.js';
+import {
+  GLOB_TOOL_NAME,
+  GREP_TOOL_NAME,
+  LS_TOOL_NAME,
+  MEMORY_TOOL_NAME,
+  READ_FILE_TOOL_NAME,
+  READ_MANY_FILES_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
+} from '../tools/tool-names.js';
+import { promptIdContext } from '../utils/promptIdContext.js';
+import {
+  logAgentStart,
+  logAgentFinish,
+  logRecoveryAttempt,
+} from '../telemetry/loggers.js';
+import {
+  AgentStartEvent,
+  AgentFinishEvent,
+  RecoveryAttemptEvent,
+} from '../telemetry/types.js';
 import type {
   AgentDefinition,
   AgentInputs,
@@ -35,26 +49,44 @@ import type {
 import { AgentTerminateMode } from './types.js';
 import { templateString } from './utils.js';
 import { parseThought } from '../utils/thoughtUtils.js';
+import { type z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { debugLogger } from '../utils/debugLogger.js';
+import { getModelConfigAlias } from './registry.js';
 
 /** A callback function to report on agent activity. */
 export type ActivityCallback = (activity: SubagentActivityEvent) => void;
 
+const TASK_COMPLETE_TOOL_NAME = 'complete_task';
+const GRACE_PERIOD_MS = 60 * 1000; // 1 min
+
+/** The possible outcomes of a single agent turn. */
+type AgentTurnResult =
+  | {
+      status: 'continue';
+      nextMessage: Content;
+    }
+  | {
+      status: 'stop';
+      terminateReason: AgentTerminateMode;
+      finalResult: string | null;
+    };
+
 /**
  * Executes an agent loop based on an {@link AgentDefinition}.
  *
- * This executor uses a simplified two-phase approach:
- * 1.  **Work Phase:** The agent runs in a loop, calling tools until it has
- * gathered all necessary information to fulfill its goal.
- * 2.  **Extraction Phase:** A final prompt is sent to the model to summarize
- * the work and extract the final result in the desired format.
+ * This executor runs the agent in a loop, calling tools until it calls the
+ * mandatory `complete_task` tool to signal completion.
  */
-export class AgentExecutor {
-  readonly definition: AgentDefinition;
+export class AgentExecutor<TOutput extends z.ZodTypeAny> {
+  readonly definition: AgentDefinition<TOutput>;
 
   private readonly agentId: string;
   private readonly toolRegistry: ToolRegistry;
   private readonly runtimeContext: Config;
   private readonly onActivity?: ActivityCallback;
+  private readonly compressionService: ChatCompressionService;
+  private hasFailedCompressionAttempt = false;
 
   /**
    * Creates and validates a new `AgentExecutor` instance.
@@ -67,11 +99,11 @@ export class AgentExecutor {
    * @param onActivity An optional callback to receive activity events.
    * @returns A promise that resolves to a new `AgentExecutor` instance.
    */
-  static async create(
-    definition: AgentDefinition,
+  static async create<TOutput extends z.ZodTypeAny>(
+    definition: AgentDefinition<TOutput>,
     runtimeContext: Config,
     onActivity?: ActivityCallback,
-  ): Promise<AgentExecutor> {
+  ): Promise<AgentExecutor<TOutput>> {
     // Create an isolated tool registry for this agent instance.
     const agentToolRegistry = new ToolRegistry(runtimeContext);
     const parentToolRegistry = await runtimeContext.getToolRegistry();
@@ -96,15 +128,20 @@ export class AgentExecutor {
         // registered; their schemas are passed directly to the model later.
       }
 
+      agentToolRegistry.sortTools();
       // Validate that all registered tools are safe for non-interactive
       // execution.
       await AgentExecutor.validateTools(agentToolRegistry, definition.name);
     }
 
+    // Get the parent prompt ID from context
+    const parentPromptId = promptIdContext.getStore();
+
     return new AgentExecutor(
       definition,
       runtimeContext,
       agentToolRegistry,
+      parentPromptId,
       onActivity,
     );
   }
@@ -116,18 +153,207 @@ export class AgentExecutor {
    * instantiate the class.
    */
   private constructor(
-    definition: AgentDefinition,
+    definition: AgentDefinition<TOutput>,
     runtimeContext: Config,
     toolRegistry: ToolRegistry,
+    parentPromptId: string | undefined,
     onActivity?: ActivityCallback,
   ) {
     this.definition = definition;
     this.runtimeContext = runtimeContext;
     this.toolRegistry = toolRegistry;
     this.onActivity = onActivity;
+    this.compressionService = new ChatCompressionService();
 
     const randomIdPart = Math.random().toString(36).slice(2, 8);
-    this.agentId = `${this.definition.name}-${randomIdPart}`;
+    // parentPromptId will be undefined if this agent is invoked directly
+    // (top-level), rather than as a sub-agent.
+    const parentPrefix = parentPromptId ? `${parentPromptId}-` : '';
+    this.agentId = `${parentPrefix}${this.definition.name}-${randomIdPart}`;
+  }
+
+  /**
+   * Executes a single turn of the agent's logic, from calling the model
+   * to processing its response.
+   *
+   * @returns An {@link AgentTurnResult} object indicating whether to continue
+   * or stop the agent loop.
+   */
+  private async executeTurn(
+    chat: GeminiChat,
+    currentMessage: Content,
+    tools: FunctionDeclaration[],
+    turnCounter: number,
+    combinedSignal: AbortSignal,
+    timeoutSignal: AbortSignal, // Pass the timeout controller's signal
+  ): Promise<AgentTurnResult> {
+    const promptId = `${this.agentId}#${turnCounter}`;
+
+    await this.tryCompressChat(chat, promptId);
+
+    const { functionCalls } = await promptIdContext.run(promptId, async () =>
+      this.callModel(chat, currentMessage, tools, combinedSignal, promptId),
+    );
+
+    if (combinedSignal.aborted) {
+      const terminateReason = timeoutSignal.aborted
+        ? AgentTerminateMode.TIMEOUT
+        : AgentTerminateMode.ABORTED;
+      return {
+        status: 'stop',
+        terminateReason,
+        finalResult: null, // 'run' method will set the final timeout string
+      };
+    }
+
+    // If the model stops calling tools without calling complete_task, it's an error.
+    if (functionCalls.length === 0) {
+      this.emitActivity('ERROR', {
+        error: `Agent stopped calling tools but did not call '${TASK_COMPLETE_TOOL_NAME}' to finalize the session.`,
+        context: 'protocol_violation',
+      });
+      return {
+        status: 'stop',
+        terminateReason: AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL,
+        finalResult: null,
+      };
+    }
+
+    const { nextMessage, submittedOutput, taskCompleted } =
+      await this.processFunctionCalls(functionCalls, combinedSignal, promptId);
+
+    if (taskCompleted) {
+      const finalResult = submittedOutput ?? 'Task completed successfully.';
+      return {
+        status: 'stop',
+        terminateReason: AgentTerminateMode.GOAL,
+        finalResult,
+      };
+    }
+
+    // Task is not complete, continue to the next turn.
+    return {
+      status: 'continue',
+      nextMessage,
+    };
+  }
+
+  /**
+   * Generates a specific warning message for the agent's final turn.
+   */
+  private getFinalWarningMessage(
+    reason:
+      | AgentTerminateMode.TIMEOUT
+      | AgentTerminateMode.MAX_TURNS
+      | AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL,
+  ): string {
+    let explanation = '';
+    switch (reason) {
+      case AgentTerminateMode.TIMEOUT:
+        explanation = 'You have exceeded the time limit.';
+        break;
+      case AgentTerminateMode.MAX_TURNS:
+        explanation = 'You have exceeded the maximum number of turns.';
+        break;
+      case AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL:
+        explanation = 'You have stopped calling tools without finishing.';
+        break;
+      default:
+        throw new Error(`Unknown terminate reason: ${reason}`);
+    }
+    return `${explanation} You have one final chance to complete the task with a short grace period. You MUST call \`${TASK_COMPLETE_TOOL_NAME}\` immediately with your best answer and explain that your investigation was interrupted. Do not call any other tools.`;
+  }
+
+  /**
+   * Attempts a single, final recovery turn if the agent stops for a recoverable reason.
+   * Gives the agent a grace period to call `complete_task`.
+   *
+   * @returns The final result string if recovery was successful, or `null` if it failed.
+   */
+  private async executeFinalWarningTurn(
+    chat: GeminiChat,
+    tools: FunctionDeclaration[],
+    turnCounter: number,
+    reason:
+      | AgentTerminateMode.TIMEOUT
+      | AgentTerminateMode.MAX_TURNS
+      | AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL,
+    externalSignal: AbortSignal, // The original signal passed to run()
+  ): Promise<string | null> {
+    this.emitActivity('THOUGHT_CHUNK', {
+      text: `Execution limit reached (${reason}). Attempting one final recovery turn with a grace period.`,
+    });
+
+    const recoveryStartTime = Date.now();
+    let success = false;
+
+    const gracePeriodMs = GRACE_PERIOD_MS;
+    const graceTimeoutController = new AbortController();
+    const graceTimeoutId = setTimeout(
+      () => graceTimeoutController.abort(new Error('Grace period timed out.')),
+      gracePeriodMs,
+    );
+
+    try {
+      const recoveryMessage: Content = {
+        role: 'user',
+        parts: [{ text: this.getFinalWarningMessage(reason) }],
+      };
+
+      // We monitor both the external signal and our new grace period timeout
+      const combinedSignal = AbortSignal.any([
+        externalSignal,
+        graceTimeoutController.signal,
+      ]);
+
+      const turnResult = await this.executeTurn(
+        chat,
+        recoveryMessage,
+        tools,
+        turnCounter, // This will be the "last" turn number
+        combinedSignal,
+        graceTimeoutController.signal, // Pass grace signal to identify a *grace* timeout
+      );
+
+      if (
+        turnResult.status === 'stop' &&
+        turnResult.terminateReason === AgentTerminateMode.GOAL
+      ) {
+        // Success!
+        this.emitActivity('THOUGHT_CHUNK', {
+          text: 'Graceful recovery succeeded.',
+        });
+        success = true;
+        return turnResult.finalResult ?? 'Task completed during grace period.';
+      }
+
+      // Any other outcome (continue, error, non-GOAL stop) is a failure.
+      this.emitActivity('ERROR', {
+        error: `Graceful recovery attempt failed. Reason: ${turnResult.status}`,
+        context: 'recovery_turn',
+      });
+      return null;
+    } catch (error) {
+      // This catch block will likely catch the 'Grace period timed out' error.
+      this.emitActivity('ERROR', {
+        error: `Graceful recovery attempt failed: ${String(error)}`,
+        context: 'recovery_turn',
+      });
+      return null;
+    } finally {
+      clearTimeout(graceTimeoutId);
+      logRecoveryAttempt(
+        this.runtimeContext,
+        new RecoveryAttemptEvent(
+          this.agentId,
+          this.definition.name,
+          reason,
+          Date.now() - recoveryStartTime,
+          success,
+          turnCounter,
+        ),
+      );
+    }
   }
 
   /**
@@ -140,90 +366,220 @@ export class AgentExecutor {
   async run(inputs: AgentInputs, signal: AbortSignal): Promise<OutputObject> {
     const startTime = Date.now();
     let turnCounter = 0;
+    let terminateReason: AgentTerminateMode = AgentTerminateMode.ERROR;
+    let finalResult: string | null = null;
 
+    const { max_time_minutes } = this.definition.runConfig;
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(
+      () => timeoutController.abort(new Error('Agent timed out.')),
+      max_time_minutes * 60 * 1000,
+    );
+
+    // Combine the external signal with the internal timeout signal.
+    const combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
+
+    logAgentStart(
+      this.runtimeContext,
+      new AgentStartEvent(this.agentId, this.definition.name),
+    );
+
+    let chat: GeminiChat | undefined;
+    let tools: FunctionDeclaration[] | undefined;
     try {
-      const chat = await this.createChatObject(inputs);
-      const tools = this.prepareToolsList();
-      let terminateReason = AgentTerminateMode.GOAL;
-
-      // Phase 1: Work Phase
-      // The agent works in a loop until it stops calling tools.
-      let currentMessages: Content[] = [
-        { role: 'user', parts: [{ text: 'Get Started!' }] },
-      ];
+      chat = await this.createChatObject(inputs);
+      tools = this.prepareToolsList();
+      const query = this.definition.promptConfig.query
+        ? templateString(this.definition.promptConfig.query, inputs)
+        : 'Get Started!';
+      let currentMessage: Content = { role: 'user', parts: [{ text: query }] };
 
       while (true) {
-        // Check for termination conditions like max turns or timeout.
+        // Check for termination conditions like max turns.
         const reason = this.checkTermination(startTime, turnCounter);
         if (reason) {
           terminateReason = reason;
           break;
         }
-        if (signal.aborted) {
-          terminateReason = AgentTerminateMode.ABORTED;
+
+        // Check for timeout or external abort.
+        if (combinedSignal.aborted) {
+          // Determine which signal caused the abort.
+          terminateReason = timeoutController.signal.aborted
+            ? AgentTerminateMode.TIMEOUT
+            : AgentTerminateMode.ABORTED;
           break;
         }
 
-        // Call model
-        const promptId = `${this.runtimeContext.getSessionId()}#${this.agentId}#${turnCounter++}`;
-        const { functionCalls } = await this.callModel(
+        const turnResult = await this.executeTurn(
           chat,
-          currentMessages,
+          currentMessage,
           tools,
-          signal,
-          promptId,
+          turnCounter++,
+          combinedSignal,
+          timeoutController.signal,
         );
 
-        if (signal.aborted) {
-          terminateReason = AgentTerminateMode.ABORTED;
-          break;
+        if (turnResult.status === 'stop') {
+          terminateReason = turnResult.terminateReason;
+          // Only set finalResult if the turn provided one (e.g., error or goal).
+          if (turnResult.finalResult) {
+            finalResult = turnResult.finalResult;
+          }
+          break; // Exit the loop for *any* stop reason.
         }
 
-        // If the model stops calling tools, the work phase is complete.
-        if (functionCalls.length === 0) {
-          break;
-        }
-
-        currentMessages = await this.processFunctionCalls(
-          functionCalls,
-          signal,
-          promptId,
-        );
+        // If status is 'continue', update message for the next loop
+        currentMessage = turnResult.nextMessage;
       }
 
-      // If the work phase was terminated early, skip extraction and return.
-      if (terminateReason !== AgentTerminateMode.GOAL) {
+      // === UNIFIED RECOVERY BLOCK ===
+      // Only attempt recovery if it's a known recoverable reason.
+      // We don't recover from GOAL (already done) or ABORTED (user cancelled).
+      if (
+        terminateReason !== AgentTerminateMode.ERROR &&
+        terminateReason !== AgentTerminateMode.ABORTED &&
+        terminateReason !== AgentTerminateMode.GOAL
+      ) {
+        const recoveryResult = await this.executeFinalWarningTurn(
+          chat,
+          tools,
+          turnCounter, // Use current turnCounter for the recovery attempt
+          terminateReason,
+          signal, // Pass the external signal
+        );
+
+        if (recoveryResult !== null) {
+          // Recovery Succeeded
+          terminateReason = AgentTerminateMode.GOAL;
+          finalResult = recoveryResult;
+        } else {
+          // Recovery Failed. Set the final error message based on the *original* reason.
+          if (terminateReason === AgentTerminateMode.TIMEOUT) {
+            finalResult = `Agent timed out after ${this.definition.runConfig.max_time_minutes} minutes.`;
+            this.emitActivity('ERROR', {
+              error: finalResult,
+              context: 'timeout',
+            });
+          } else if (terminateReason === AgentTerminateMode.MAX_TURNS) {
+            finalResult = `Agent reached max turns limit (${this.definition.runConfig.max_turns}).`;
+            this.emitActivity('ERROR', {
+              error: finalResult,
+              context: 'max_turns',
+            });
+          } else if (
+            terminateReason === AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL
+          ) {
+            // The finalResult was already set by executeTurn, but we re-emit just in case.
+            finalResult =
+              finalResult ||
+              `Agent stopped calling tools but did not call '${TASK_COMPLETE_TOOL_NAME}'.`;
+            this.emitActivity('ERROR', {
+              error: finalResult,
+              context: 'protocol_violation',
+            });
+          }
+        }
+      }
+
+      // === FINAL RETURN LOGIC ===
+      if (terminateReason === AgentTerminateMode.GOAL) {
         return {
-          result: 'Agent execution was terminated before completion.',
+          result: finalResult || 'Task completed.',
           terminate_reason: terminateReason,
         };
       }
 
-      // Phase 2: Extraction Phase
-      // A final message is sent to summarize findings and produce the output.
-      const extractionMessage = this.buildExtractionMessage();
-      const extractionMessages: Content[] = [
-        { role: 'user', parts: [{ text: extractionMessage }] },
-      ];
-
-      const extractionPromptId = `${this.runtimeContext.getSessionId()}#${this.agentId}#extraction`;
-
-      // TODO: Consider if we should keep tools to avoid cache reset.
-      const { textResponse } = await this.callModel(
-        chat,
-        extractionMessages,
-        [], // No tools are available in the extraction phase.
-        signal,
-        extractionPromptId,
-      );
-
       return {
-        result: textResponse || 'No response generated',
+        result:
+          finalResult || 'Agent execution was terminated before completion.',
         terminate_reason: terminateReason,
       };
     } catch (error) {
+      // Check if the error is an AbortError caused by our internal timeout.
+      if (
+        error instanceof Error &&
+        error.name === 'AbortError' &&
+        timeoutController.signal.aborted &&
+        !signal.aborted // Ensure the external signal was not the cause
+      ) {
+        terminateReason = AgentTerminateMode.TIMEOUT;
+
+        // Also use the unified recovery logic here
+        if (chat && tools) {
+          const recoveryResult = await this.executeFinalWarningTurn(
+            chat,
+            tools,
+            turnCounter, // Use current turnCounter
+            AgentTerminateMode.TIMEOUT,
+            signal,
+          );
+
+          if (recoveryResult !== null) {
+            // Recovery Succeeded
+            terminateReason = AgentTerminateMode.GOAL;
+            finalResult = recoveryResult;
+            return {
+              result: finalResult,
+              terminate_reason: terminateReason,
+            };
+          }
+        }
+
+        // Recovery failed or wasn't possible
+        finalResult = `Agent timed out after ${this.definition.runConfig.max_time_minutes} minutes.`;
+        this.emitActivity('ERROR', {
+          error: finalResult,
+          context: 'timeout',
+        });
+        return {
+          result: finalResult,
+          terminate_reason: terminateReason,
+        };
+      }
+
       this.emitActivity('ERROR', { error: String(error) });
-      throw error; // Re-throw the error for the parent context to handle.
+      throw error; // Re-throw other errors or external aborts.
+    } finally {
+      clearTimeout(timeoutId);
+      logAgentFinish(
+        this.runtimeContext,
+        new AgentFinishEvent(
+          this.agentId,
+          this.definition.name,
+          Date.now() - startTime,
+          turnCounter,
+          terminateReason,
+        ),
+      );
+    }
+  }
+
+  private async tryCompressChat(
+    chat: GeminiChat,
+    prompt_id: string,
+  ): Promise<void> {
+    const model = this.definition.modelConfig.model;
+
+    const { newHistory, info } = await this.compressionService.compress(
+      chat,
+      prompt_id,
+      false,
+      model,
+      this.runtimeContext,
+      this.hasFailedCompressionAttempt,
+    );
+
+    if (
+      info.compressionStatus ===
+      CompressionStatus.COMPRESSION_FAILED_INFLATED_TOKEN_COUNT
+    ) {
+      this.hasFailedCompressionAttempt = true;
+    } else if (info.compressionStatus === CompressionStatus.COMPRESSED) {
+      if (newHistory) {
+        chat.setHistory(newHistory);
+        this.hasFailedCompressionAttempt = false;
+      }
     }
   }
 
@@ -234,23 +590,24 @@ export class AgentExecutor {
    */
   private async callModel(
     chat: GeminiChat,
-    messages: Content[],
+    message: Content,
     tools: FunctionDeclaration[],
     signal: AbortSignal,
     promptId: string,
   ): Promise<{ functionCalls: FunctionCall[]; textResponse: string }> {
-    const messageParams = {
-      message: messages[0]?.parts || [],
-      config: {
-        abortSignal: signal,
-        tools: tools.length > 0 ? [{ functionDeclarations: tools }] : undefined,
-      },
-    };
+    if (tools.length > 0) {
+      // TODO(12622): Move tools back to config.
+      chat.setTools([{ functionDeclarations: tools }]);
+    }
 
     const responseStream = await chat.sendMessageStream(
-      this.definition.modelConfig.model,
-      messageParams,
+      {
+        model: getModelConfigAlias(this.definition),
+        overrideScope: this.definition.name,
+      },
+      message.parts || [],
       promptId,
+      signal,
     );
 
     const functionCalls: FunctionCall[] = [];
@@ -294,7 +651,7 @@ export class AgentExecutor {
 
   /** Initializes a `GeminiChat` instance for the agent run. */
   private async createChatObject(inputs: AgentInputs): Promise<GeminiChat> {
-    const { promptConfig, modelConfig } = this.definition;
+    const { promptConfig } = this.definition;
 
     if (!promptConfig.systemPrompt && !promptConfig.initialMessages) {
       throw new Error(
@@ -302,7 +659,10 @@ export class AgentExecutor {
       );
     }
 
-    const startHistory = [...(promptConfig.initialMessages ?? [])];
+    const startHistory = this.applyTemplateToInitialMessages(
+      promptConfig.initialMessages ?? [],
+      inputs,
+    );
 
     // Build system instruction from the templated prompt string.
     const systemInstruction = promptConfig.systemPrompt
@@ -310,22 +670,10 @@ export class AgentExecutor {
       : undefined;
 
     try {
-      const generationConfig: GenerateContentConfig = {
-        temperature: modelConfig.temp,
-        topP: modelConfig.top_p,
-        thinkingConfig: {
-          includeThoughts: true,
-          thinkingBudget: modelConfig.thinkingBudget ?? -1,
-        },
-      };
-
-      if (systemInstruction) {
-        generationConfig.systemInstruction = systemInstruction;
-      }
-
       return new GeminiChat(
         this.runtimeContext,
-        generationConfig,
+        systemInstruction,
+        [], // set in `callModel`,
         startHistory,
       );
     } catch (error) {
@@ -343,80 +691,226 @@ export class AgentExecutor {
   /**
    * Executes function calls requested by the model and returns the results.
    *
-   * @returns A new `Content` object to be added to the chat history.
+   * @returns A new `Content` object for history, any submitted output, and completion status.
    */
   private async processFunctionCalls(
     functionCalls: FunctionCall[],
     signal: AbortSignal,
     promptId: string,
-  ): Promise<Content[]> {
+  ): Promise<{
+    nextMessage: Content;
+    submittedOutput: string | null;
+    taskCompleted: boolean;
+  }> {
     const allowedToolNames = new Set(this.toolRegistry.getAllToolNames());
+    // Always allow the completion tool
+    allowedToolNames.add(TASK_COMPLETE_TOOL_NAME);
 
-    // Filter out any tool calls that are not in the agent's allowed list.
-    const validatedFunctionCalls = functionCalls.filter((call) => {
-      if (!allowedToolNames.has(call.name as string)) {
-        console.warn(
-          `[AgentExecutor] Agent '${this.definition.name}' attempted to call ` +
-            `unauthorized tool '${call.name}'. This call has been blocked.`,
-        );
-        return false;
-      }
-      return true;
-    });
+    let submittedOutput: string | null = null;
+    let taskCompleted = false;
 
-    const toolPromises = validatedFunctionCalls.map(async (functionCall) => {
-      const callId = functionCall.id ?? `${functionCall.name}-${Date.now()}`;
-      const args = functionCall.args ?? {};
+    // We'll collect promises for the tool executions
+    const toolExecutionPromises: Array<Promise<Part[] | void>> = [];
+    // And we'll need a place to store the synchronous results (like complete_task or blocked calls)
+    const syncResponseParts: Part[] = [];
+
+    for (const [index, functionCall] of functionCalls.entries()) {
+      const callId = functionCall.id ?? `${promptId}-${index}`;
+      const args = (functionCall.args ?? {}) as Record<string, unknown>;
 
       this.emitActivity('TOOL_CALL_START', {
         name: functionCall.name,
         args,
       });
 
+      if (functionCall.name === TASK_COMPLETE_TOOL_NAME) {
+        if (taskCompleted) {
+          // We already have a completion from this turn. Ignore subsequent ones.
+          const error =
+            'Task already marked complete in this turn. Ignoring duplicate call.';
+          syncResponseParts.push({
+            functionResponse: {
+              name: TASK_COMPLETE_TOOL_NAME,
+              response: { error },
+              id: callId,
+            },
+          });
+          this.emitActivity('ERROR', {
+            context: 'tool_call',
+            name: functionCall.name,
+            error,
+          });
+          continue;
+        }
+
+        const { outputConfig } = this.definition;
+        taskCompleted = true; // Signal completion regardless of output presence
+
+        if (outputConfig) {
+          const outputName = outputConfig.outputName;
+          if (args[outputName] !== undefined) {
+            const outputValue = args[outputName];
+            const validationResult = outputConfig.schema.safeParse(outputValue);
+
+            if (!validationResult.success) {
+              taskCompleted = false; // Validation failed, revoke completion
+              const error = `Output validation failed: ${JSON.stringify(validationResult.error.flatten())}`;
+              syncResponseParts.push({
+                functionResponse: {
+                  name: TASK_COMPLETE_TOOL_NAME,
+                  response: { error },
+                  id: callId,
+                },
+              });
+              this.emitActivity('ERROR', {
+                context: 'tool_call',
+                name: functionCall.name,
+                error,
+              });
+              continue;
+            }
+
+            const validatedOutput = validationResult.data;
+            if (this.definition.processOutput) {
+              submittedOutput = this.definition.processOutput(validatedOutput);
+            } else {
+              submittedOutput =
+                typeof outputValue === 'string'
+                  ? outputValue
+                  : JSON.stringify(outputValue, null, 2);
+            }
+            syncResponseParts.push({
+              functionResponse: {
+                name: TASK_COMPLETE_TOOL_NAME,
+                response: { result: 'Output submitted and task completed.' },
+                id: callId,
+              },
+            });
+            this.emitActivity('TOOL_CALL_END', {
+              name: functionCall.name,
+              output: 'Output submitted and task completed.',
+            });
+          } else {
+            // Failed to provide required output.
+            taskCompleted = false; // Revoke completion status
+            const error = `Missing required argument '${outputName}' for completion.`;
+            syncResponseParts.push({
+              functionResponse: {
+                name: TASK_COMPLETE_TOOL_NAME,
+                response: { error },
+                id: callId,
+              },
+            });
+            this.emitActivity('ERROR', {
+              context: 'tool_call',
+              name: functionCall.name,
+              error,
+            });
+          }
+        } else {
+          // No output expected. Just signal completion.
+          submittedOutput = 'Task completed successfully.';
+          syncResponseParts.push({
+            functionResponse: {
+              name: TASK_COMPLETE_TOOL_NAME,
+              response: { status: 'Task marked complete.' },
+              id: callId,
+            },
+          });
+          this.emitActivity('TOOL_CALL_END', {
+            name: functionCall.name,
+            output: 'Task marked complete.',
+          });
+        }
+        continue;
+      }
+
+      // Handle standard tools
+      if (!allowedToolNames.has(functionCall.name as string)) {
+        const error = `Unauthorized tool call: '${functionCall.name}' is not available to this agent.`;
+
+        debugLogger.warn(`[AgentExecutor] Blocked call: ${error}`);
+
+        syncResponseParts.push({
+          functionResponse: {
+            name: functionCall.name as string,
+            id: callId,
+            response: { error },
+          },
+        });
+
+        this.emitActivity('ERROR', {
+          context: 'tool_call_unauthorized',
+          name: functionCall.name,
+          callId,
+          error,
+        });
+
+        continue;
+      }
+
       const requestInfo: ToolCallRequestInfo = {
         callId,
         name: functionCall.name as string,
-        args: args as Record<string, unknown>,
+        args,
         isClientInitiated: true,
         prompt_id: promptId,
       };
 
-      const toolResponse = await executeToolCall(
-        this.runtimeContext,
-        requestInfo,
-        signal,
-      );
+      // Create a promise for the tool execution
+      const executionPromise = (async () => {
+        const { response: toolResponse } = await executeToolCall(
+          this.runtimeContext,
+          requestInfo,
+          signal,
+        );
 
-      if (toolResponse.error) {
-        this.emitActivity('ERROR', {
-          context: 'tool_call',
-          name: functionCall.name,
-          error: toolResponse.error.message,
-        });
-      } else {
-        this.emitActivity('TOOL_CALL_END', {
-          name: functionCall.name,
-          output: toolResponse.resultDisplay,
-        });
+        if (toolResponse.error) {
+          this.emitActivity('ERROR', {
+            context: 'tool_call',
+            name: functionCall.name,
+            error: toolResponse.error.message,
+          });
+        } else {
+          this.emitActivity('TOOL_CALL_END', {
+            name: functionCall.name,
+            output: toolResponse.resultDisplay,
+          });
+        }
+
+        return toolResponse.responseParts;
+      })();
+
+      toolExecutionPromises.push(executionPromise);
+    }
+
+    // Wait for all tool executions to complete
+    const asyncResults = await Promise.all(toolExecutionPromises);
+
+    // Combine all response parts
+    const toolResponseParts: Part[] = [...syncResponseParts];
+    for (const result of asyncResults) {
+      if (result) {
+        toolResponseParts.push(...result);
       }
+    }
 
-      return toolResponse;
-    });
-
-    const toolResponses = await Promise.all(toolPromises);
-    const toolResponseParts: Part[] = toolResponses
-      .flatMap((response) => response.responseParts)
-      .filter((part): part is Part => part !== undefined);
-
-    // If all authorized tool calls failed, provide a generic error message
-    // to the model so it can try a different approach.
-    if (functionCalls.length > 0 && toolResponseParts.length === 0) {
+    // If all authorized tool calls failed (and task isn't complete), provide a generic error.
+    if (
+      functionCalls.length > 0 &&
+      toolResponseParts.length === 0 &&
+      !taskCompleted
+    ) {
       toolResponseParts.push({
-        text: 'All tool calls failed. Please analyze the errors and try an alternative approach.',
+        text: 'All tool calls failed or were unauthorized. Please analyze the errors and try an alternative approach.',
       });
     }
 
-    return [{ role: 'user', parts: toolResponseParts }];
+    return {
+      nextMessage: { role: 'user', parts: toolResponseParts },
+      submittedOutput,
+      taskCompleted,
+    };
   }
 
   /**
@@ -424,7 +918,7 @@ export class AgentExecutor {
    */
   private prepareToolsList(): FunctionDeclaration[] {
     const toolsList: FunctionDeclaration[] = [];
-    const { toolConfig } = this.definition;
+    const { toolConfig, outputConfig } = this.definition;
 
     if (toolConfig) {
       const toolNamesToLoad: string[] = [];
@@ -445,12 +939,40 @@ export class AgentExecutor {
       );
     }
 
+    // Always inject complete_task.
+    // Configure its schema based on whether output is expected.
+    const completeTool: FunctionDeclaration = {
+      name: TASK_COMPLETE_TOOL_NAME,
+      description: outputConfig
+        ? 'Call this tool to submit your final answer and complete the task. This is the ONLY way to finish.'
+        : 'Call this tool to signal that you have completed your task. This is the ONLY way to finish.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {},
+        required: [],
+      },
+    };
+
+    if (outputConfig) {
+      const jsonSchema = zodToJsonSchema(outputConfig.schema);
+      const {
+        $schema: _$schema,
+        definitions: _definitions,
+        ...schema
+      } = jsonSchema;
+      completeTool.parameters!.properties![outputConfig.outputName] =
+        schema as Schema;
+      completeTool.parameters!.required!.push(outputConfig.outputName);
+    }
+
+    toolsList.push(completeTool);
+
     return toolsList;
   }
 
   /** Builds the system prompt from the agent definition and inputs. */
   private async buildSystemPrompt(inputs: AgentInputs): Promise<string> {
-    const { promptConfig, outputConfig } = this.definition;
+    const { promptConfig } = this.definition;
     if (!promptConfig.systemPrompt) {
       return '';
     }
@@ -462,43 +984,41 @@ export class AgentExecutor {
     const dirContext = await getDirectoryContextString(this.runtimeContext);
     finalPrompt += `\n\n# Environment Context\n${dirContext}`;
 
-    // Append completion criteria to guide the model's output.
-    if (outputConfig?.completion_criteria) {
-      finalPrompt += '\n\nEnsure you complete the following:\n';
-      for (const criteria of outputConfig.completion_criteria) {
-        finalPrompt += `- ${criteria}\n`;
-      }
-    }
-
     // Append standard rules for non-interactive execution.
     finalPrompt += `
 Important Rules:
 * You are running in a non-interactive mode. You CANNOT ask the user for input or clarification.
 * Work systematically using available tools to complete your task.
-* Always use absolute paths for file operations. Construct them using the provided "Environment Context".
-* When you have completed your analysis and are ready to produce the final answer, stop calling tools.`;
+* Always use absolute paths for file operations. Construct them using the provided "Environment Context".`;
+
+    finalPrompt += `
+* When you have completed your task, you MUST call the \`${TASK_COMPLETE_TOOL_NAME}\` tool.
+* Do not call any other tools in the same turn as \`${TASK_COMPLETE_TOOL_NAME}\`.
+* This is the ONLY way to complete your mission. If you stop calling tools without calling this, you have failed.`;
 
     return finalPrompt;
   }
 
-  /** Builds the final message for the extraction phase. */
-  private buildExtractionMessage(): string {
-    const { outputConfig } = this.definition;
-
-    if (outputConfig?.description) {
-      let message = `Based on your work so far, provide: ${outputConfig.description}`;
-
-      if (outputConfig.completion_criteria?.length) {
-        message += `\n\nBe sure you have addressed:\n`;
-        for (const criteria of outputConfig.completion_criteria) {
-          message += `- ${criteria}\n`;
+  /**
+   * Applies template strings to initial messages.
+   *
+   * @param initialMessages The initial messages from the prompt config.
+   * @param inputs The validated input parameters for this invocation.
+   * @returns A new array of `Content` with templated strings.
+   */
+  private applyTemplateToInitialMessages(
+    initialMessages: Content[],
+    inputs: AgentInputs,
+  ): Content[] {
+    return initialMessages.map((content) => {
+      const newParts = (content.parts ?? []).map((part) => {
+        if ('text' in part && part.text !== undefined) {
+          return { text: templateString(part.text, inputs) };
         }
-      }
-      return message;
-    }
-
-    // Fallback to a generic extraction message if no description is provided.
-    return 'Based on your work so far, provide a comprehensive summary of your analysis and findings. Do not perform any more function calls.';
+        return part;
+      });
+      return { ...content, parts: newParts };
+    });
   }
 
   /**
@@ -513,14 +1033,13 @@ Important Rules:
     // Tools that are non-interactive. This is temporary until we have tool
     // confirmations for subagents.
     const allowlist = new Set([
-      LSTool.Name,
-      ReadFileTool.Name,
-      GrepTool.Name,
-      RipGrepTool.Name,
-      GlobTool.Name,
-      ReadManyFilesTool.Name,
-      MemoryTool.Name,
-      WebSearchTool.Name,
+      LS_TOOL_NAME,
+      READ_FILE_TOOL_NAME,
+      GREP_TOOL_NAME,
+      GLOB_TOOL_NAME,
+      READ_MANY_FILES_TOOL_NAME,
+      MEMORY_TOOL_NAME,
+      WEB_SEARCH_TOOL_NAME,
     ]);
     for (const tool of toolRegistry.getAllTools()) {
       if (!allowlist.has(tool.name)) {
@@ -546,11 +1065,6 @@ Important Rules:
 
     if (runConfig.max_turns && turnCounter >= runConfig.max_turns) {
       return AgentTerminateMode.MAX_TURNS;
-    }
-
-    const elapsedMinutes = (Date.now() - startTime) / (1000 * 60);
-    if (elapsedMinutes >= runConfig.max_time_minutes) {
-      return AgentTerminateMode.TIMEOUT;
     }
 
     return null;

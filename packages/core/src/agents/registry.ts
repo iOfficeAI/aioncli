@@ -7,13 +7,26 @@
 import type { Config } from '../config/config.js';
 import type { AgentDefinition } from './types.js';
 import { CodebaseInvestigatorAgent } from './codebase-investigator.js';
+import { type z } from 'zod';
+import { debugLogger } from '../utils/debugLogger.js';
+import type { ModelConfigAlias } from '../services/modelConfigService.js';
+
+/**
+ * Returns the model config alias for a given agent definition.
+ */
+export function getModelConfigAlias<TOutput extends z.ZodTypeAny>(
+  definition: AgentDefinition<TOutput>,
+): string {
+  return `${definition.name}-config`;
+}
 
 /**
  * Manages the discovery, loading, validation, and registration of
  * AgentDefinitions.
  */
 export class AgentRegistry {
-  private readonly agents = new Map<string, AgentDefinition>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readonly agents = new Map<string, AgentDefinition<any>>();
 
   constructor(private readonly config: Config) {}
 
@@ -24,14 +37,40 @@ export class AgentRegistry {
     this.loadBuiltInAgents();
 
     if (this.config.getDebugMode()) {
-      console.log(
+      debugLogger.log(
         `[AgentRegistry] Initialized with ${this.agents.size} agents.`,
       );
     }
   }
 
   private loadBuiltInAgents(): void {
-    this.registerAgent(CodebaseInvestigatorAgent);
+    const investigatorSettings = this.config.getCodebaseInvestigatorSettings();
+
+    // Only register the agent if it's enabled in the settings.
+    if (investigatorSettings?.enabled) {
+      const agentDef = {
+        ...CodebaseInvestigatorAgent,
+        modelConfig: {
+          ...CodebaseInvestigatorAgent.modelConfig,
+          model:
+            investigatorSettings.model ??
+            CodebaseInvestigatorAgent.modelConfig.model,
+          thinkingBudget:
+            investigatorSettings.thinkingBudget ??
+            CodebaseInvestigatorAgent.modelConfig.thinkingBudget,
+        },
+        runConfig: {
+          ...CodebaseInvestigatorAgent.runConfig,
+          max_time_minutes:
+            investigatorSettings.maxTimeMinutes ??
+            CodebaseInvestigatorAgent.runConfig.max_time_minutes,
+          max_turns:
+            investigatorSettings.maxNumTurns ??
+            CodebaseInvestigatorAgent.runConfig.max_turns,
+        },
+      };
+      this.registerAgent(agentDef);
+    }
   }
 
   /**
@@ -39,20 +78,45 @@ export class AgentRegistry {
    * it will be overwritten, respecting the precedence established by the
    * initialization order.
    */
-  protected registerAgent(definition: AgentDefinition): void {
+  protected registerAgent<TOutput extends z.ZodTypeAny>(
+    definition: AgentDefinition<TOutput>,
+  ): void {
     // Basic validation
     if (!definition.name || !definition.description) {
-      console.warn(
+      debugLogger.warn(
         `[AgentRegistry] Skipping invalid agent definition. Missing name or description.`,
       );
       return;
     }
 
     if (this.agents.has(definition.name) && this.config.getDebugMode()) {
-      console.log(`[AgentRegistry] Overriding agent '${definition.name}'`);
+      debugLogger.log(`[AgentRegistry] Overriding agent '${definition.name}'`);
     }
 
     this.agents.set(definition.name, definition);
+
+    // Register model config.
+    // TODO(12916): Migrate sub-agents where possible to static configs.
+    const modelConfig = definition.modelConfig;
+
+    const runtimeAlias: ModelConfigAlias = {
+      modelConfig: {
+        model: modelConfig.model,
+        generateContentConfig: {
+          temperature: modelConfig.temp,
+          topP: modelConfig.top_p,
+          thinkingConfig: {
+            includeThoughts: true,
+            thinkingBudget: modelConfig.thinkingBudget ?? -1,
+          },
+        },
+      },
+    };
+
+    this.config.modelConfigService.registerRuntimeModelConfig(
+      getModelConfigAlias(definition),
+      runtimeAlias,
+    );
   }
 
   /**
