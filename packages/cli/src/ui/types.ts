@@ -6,6 +6,7 @@
 
 import type {
   CompressionStatus,
+  GeminiCLIExtension,
   MCPServerConfig,
   ThoughtSummary,
   ToolCallConfirmationDetails,
@@ -22,6 +23,8 @@ export enum AuthState {
   Unauthenticated = 'unauthenticated',
   // Auth dialog is open for user to select auth method
   Updating = 'updating',
+  // Waiting for user to input API key
+  AwaitingApiKeyInput = 'awaiting_api_key_input',
   // Successfully authenticated
   Authenticated = 'authenticated',
 }
@@ -78,6 +81,11 @@ export interface CompressionProps {
   compressionStatus: CompressionStatus | null;
 }
 
+/**
+ * For use when you want no icon.
+ */
+export const emptyIcon = '  ';
+
 export interface HistoryItemBase {
   text?: string; // Text content for user/gemini/info/error messages
 }
@@ -100,6 +108,8 @@ export type HistoryItemGeminiContent = HistoryItemBase & {
 export type HistoryItemInfo = HistoryItemBase & {
   type: 'info';
   text: string;
+  icon?: string;
+  color?: string;
 };
 
 export type HistoryItemError = HistoryItemBase & {
@@ -121,6 +131,7 @@ export type HistoryItemAbout = HistoryItemBase & {
   selectedAuthType: string;
   gcpProject: string;
   ideClient: string;
+  userEmail?: string;
 };
 
 export type HistoryItemHelp = HistoryItemBase & {
@@ -139,6 +150,11 @@ export type HistoryItemModelStats = HistoryItemBase & {
 
 export type HistoryItemToolStats = HistoryItemBase & {
   type: 'tool_stats';
+};
+
+export type HistoryItemModel = HistoryItemBase & {
+  type: 'model';
+  model: string;
 };
 
 export type HistoryItemQuit = HistoryItemBase & {
@@ -163,6 +179,17 @@ export type HistoryItemCompression = HistoryItemBase & {
 
 export type HistoryItemExtensionsList = HistoryItemBase & {
   type: 'extensions_list';
+  extensions: GeminiCLIExtension[];
+};
+
+export interface ChatDetail {
+  name: string;
+  mtime: string;
+}
+
+export type HistoryItemChatList = HistoryItemBase & {
+  type: 'chat_list';
+  chats: ChatDetail[];
 };
 
 export interface ToolDefinition {
@@ -209,7 +236,6 @@ export type HistoryItemMcpStatus = HistoryItemBase & {
   connectingServers: string[];
   showDescriptions: boolean;
   showSchema: boolean;
-  showTips: boolean;
 };
 
 // Using Omit<HistoryItem, 'id'> seems to have some issues with typescript's
@@ -230,11 +256,13 @@ export type HistoryItemWithoutId =
   | HistoryItemStats
   | HistoryItemModelStats
   | HistoryItemToolStats
+  | HistoryItemModel
   | HistoryItemQuit
   | HistoryItemCompression
   | HistoryItemExtensionsList
   | HistoryItemToolsList
-  | HistoryItemMcpStatus;
+  | HistoryItemMcpStatus
+  | HistoryItemChatList;
 
 export type HistoryItem = HistoryItemWithoutId & { id: number };
 
@@ -255,6 +283,7 @@ export enum MessageType {
   EXTENSIONS_LIST = 'extensions_list',
   TOOLS_LIST = 'tools_list',
   MCP_STATUS = 'mcp_status',
+  CHAT_LIST = 'chat_list',
 }
 
 // Simplified message structure for internal feedback
@@ -274,6 +303,7 @@ export type Message =
       selectedAuthType: string;
       gcpProject: string;
       ideClient: string;
+      userEmail?: string;
       content?: string; // Optional content, not really used for ABOUT
     }
   | {

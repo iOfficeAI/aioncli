@@ -22,6 +22,7 @@ import { GenerateContentResponse, FinishReason } from '@google/genai';
 import type { ContentGenerator } from './contentGenerator.js';
 import OpenAI from 'openai';
 import { logApiResponse } from '../telemetry/loggers.js';
+import { toContents } from '../code_assist/converter.js';
 import { ApiResponseEvent } from '../telemetry/types.js';
 import type { Config } from '../config/config.js';
 import { safeJsonParse } from '../utils/safeJsonParse.js';
@@ -297,7 +298,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
       const responseEvent = new ApiResponseEvent(
         this.model,
         durationMs,
-        userPromptId,
+        {
+          prompt_id: userPromptId,
+          contents: toContents(request.contents),
+          generate_content_config: request.config,
+        },
+        {
+          candidates: response.candidates,
+        },
         this.config.getContentGeneratorConfig()?.authType,
         response.usageMetadata,
       );
@@ -321,7 +329,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       let estimatedUsage;
       try {
         const tokenCountResult = await this.countTokens({
-          contents: request.contents,
+          contents: toContents(request.contents),
           model: this.model,
         });
         estimatedUsage = {
@@ -344,7 +352,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
       const errorEvent = new ApiResponseEvent(
         this.model,
         durationMs,
-        userPromptId,
+        {
+          prompt_id: userPromptId,
+          contents: toContents(request.contents),
+          generate_content_config: request.config,
+        },
+        {},
         this.config.getContentGeneratorConfig()?.authType,
         estimatedUsage,
         errorMessage,
@@ -467,7 +480,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
           const responseEvent = new ApiResponseEvent(
             this.model,
             durationMs,
-            userPromptId,
+            {
+              prompt_id: userPromptId,
+              contents: toContents(request.contents),
+              generate_content_config: request.config,
+            },
+            {},
             this.config.getContentGeneratorConfig()?.authType,
             finalUsageMetadata,
           );
@@ -488,7 +506,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
           let estimatedUsage;
           try {
             const tokenCountResult = await this.countTokens({
-              contents: request.contents,
+              contents: toContents(request.contents),
               model: this.model,
             });
             estimatedUsage = {
@@ -511,7 +529,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
           const errorEvent = new ApiResponseEvent(
             this.model,
             durationMs,
-            userPromptId,
+            {
+              prompt_id: userPromptId,
+              contents: toContents(request.contents),
+              generate_content_config: request.config,
+            },
+            {},
             this.config.getContentGeneratorConfig()?.authType,
             estimatedUsage,
             errorMessage,
@@ -549,7 +572,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       let estimatedUsage;
       try {
         const tokenCountResult = await this.countTokens({
-          contents: request.contents,
+          contents: toContents(request.contents),
           model: this.model,
         });
         estimatedUsage = {
@@ -572,7 +595,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
       const errorEvent = new ApiResponseEvent(
         this.model,
         durationMs,
-        userPromptId,
+        {
+          prompt_id: userPromptId,
+          contents: toContents(request.contents),
+          generate_content_config: request.config,
+        },
+        {},
         this.config.getContentGeneratorConfig()?.authType,
         estimatedUsage,
         errorMessage,

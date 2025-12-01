@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import path from 'node:path';
 import { makeRelative, shortenPath } from '../utils/paths.js';
 import type { ToolInvocation, ToolLocation, ToolResult } from './tools.js';
@@ -19,15 +20,16 @@ import { FileOperation } from '../telemetry/metrics.js';
 import { getProgrammingLanguage } from '../telemetry/telemetry-utils.js';
 import { logFileOperation } from '../telemetry/loggers.js';
 import { FileOperationEvent } from '../telemetry/types.js';
+import { READ_FILE_TOOL_NAME } from './tool-names.js';
 
 /**
  * Parameters for the ReadFile tool
  */
 export interface ReadFileToolParams {
   /**
-   * The absolute path to the file to read
+   * The path to the file to read
    */
-  absolute_path: string;
+  file_path: string;
 
   /**
    * The line number to start reading from (optional)
@@ -44,36 +46,36 @@ class ReadFileToolInvocation extends BaseToolInvocation<
   ReadFileToolParams,
   ToolResult
 > {
+  private readonly resolvedPath: string;
   constructor(
     private config: Config,
     params: ReadFileToolParams,
+    messageBus?: MessageBus,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ) {
-    // Add parameter mapping: file_path -> absolute_path
-    const paramsWithFilePath = params as ReadFileToolParams & {
-      file_path?: string;
-    };
-    const mappedParams = {
-      ...params,
-      absolute_path: paramsWithFilePath.file_path ?? params.absolute_path, // Support both parameter names, use ?? for empty string handling
-    };
-    super(mappedParams);
+    super(params, messageBus, _toolName, _toolDisplayName);
+    this.resolvedPath = path.resolve(
+      this.config.getTargetDir(),
+      this.params.file_path,
+    );
   }
 
   getDescription(): string {
     const relativePath = makeRelative(
-      this.params.absolute_path,
+      this.resolvedPath,
       this.config.getTargetDir(),
     );
     return shortenPath(relativePath);
   }
 
   override toolLocations(): ToolLocation[] {
-    return [{ path: this.params.absolute_path, line: this.params.offset }];
+    return [{ path: this.resolvedPath, line: this.params.offset }];
   }
 
   async execute(): Promise<ToolResult> {
     const result = await processSingleFileContent(
-      this.params.absolute_path,
+      this.resolvedPath,
       this.config.getTargetDir(),
       this.config.getFileSystemService(),
       this.params.offset,
@@ -113,18 +115,18 @@ ${result.llmContent}`;
       typeof result.llmContent === 'string'
         ? result.llmContent.split('\n').length
         : undefined;
-    const mimetype = getSpecificMimeType(this.params.absolute_path);
+    const mimetype = getSpecificMimeType(this.resolvedPath);
     const programming_language = getProgrammingLanguage({
-      absolute_path: this.params.absolute_path,
+      file_path: this.resolvedPath,
     });
     logFileOperation(
       this.config,
       new FileOperationEvent(
-        ReadFileTool.Name,
+        READ_FILE_TOOL_NAME,
         FileOperation.READ,
         lines,
         mimetype,
-        path.extname(this.params.absolute_path),
+        path.extname(this.resolvedPath),
         programming_language,
       ),
     );
@@ -143,9 +145,12 @@ export class ReadFileTool extends BaseDeclarativeTool<
   ReadFileToolParams,
   ToolResult
 > {
-  static readonly Name: string = 'read_file';
+  static readonly Name = READ_FILE_TOOL_NAME;
 
-  constructor(private config: Config) {
+  constructor(
+    private config: Config,
+    messageBus?: MessageBus,
+  ) {
     super(
       ReadFileTool.Name,
       'ReadFile',
@@ -154,8 +159,7 @@ export class ReadFileTool extends BaseDeclarativeTool<
       {
         properties: {
           file_path: {
-            description:
-              "The absolute path to the file to read (e.g., '/home/user/project/file.txt'). Relative paths are not supported. You must provide an absolute path.",
+            description: 'The path to the file to read.',
             type: 'string',
           },
           offset: {
@@ -172,33 +176,34 @@ export class ReadFileTool extends BaseDeclarativeTool<
         required: ['file_path'],
         type: 'object',
       },
+      true,
+      false,
+      messageBus,
     );
   }
 
   protected override validateToolParamValues(
     params: ReadFileToolParams,
   ): string | null {
-    const paramsWithFilePath = params as ReadFileToolParams & {
-      file_path?: string;
-    };
-    const filePath = paramsWithFilePath.file_path ?? params.absolute_path;
-    if (!filePath || filePath.trim() === '') {
+    if (params.file_path.trim() === '') {
       return "The 'file_path' parameter must be non-empty.";
-    }
-
-    if (!path.isAbsolute(filePath)) {
-      return `File path must be absolute, but was relative: ${filePath}. You must provide an absolute path.`;
     }
 
     const workspaceContext = this.config.getWorkspaceContext();
     const projectTempDir = this.config.storage.getProjectTempDir();
-    const resolvedFilePath = path.resolve(filePath);
+    const resolvedPath = path.resolve(
+      this.config.getTargetDir(),
+      params.file_path,
+    );
     const resolvedProjectTempDir = path.resolve(projectTempDir);
     const isWithinTempDir =
-      resolvedFilePath.startsWith(resolvedProjectTempDir + path.sep) ||
-      resolvedFilePath === resolvedProjectTempDir;
+      resolvedPath.startsWith(resolvedProjectTempDir + path.sep) ||
+      resolvedPath === resolvedProjectTempDir;
 
-    if (!workspaceContext.isPathWithinWorkspace(filePath) && !isWithinTempDir) {
+    if (
+      !workspaceContext.isPathWithinWorkspace(resolvedPath) &&
+      !isWithinTempDir
+    ) {
       const directories = workspaceContext.getDirectories();
       return `File path must be within one of the workspace directories: ${directories.join(', ')} or within the project temp directory: ${projectTempDir}`;
     }
@@ -210,8 +215,9 @@ export class ReadFileTool extends BaseDeclarativeTool<
     }
 
     const fileService = this.config.getFileService();
-    if (fileService.shouldGeminiIgnoreFile(filePath)) {
-      return `File path '${filePath}' is ignored by .geminiignore pattern(s).`;
+    const fileFilteringOptions = this.config.getFileFilteringOptions();
+    if (fileService.shouldIgnoreFile(resolvedPath, fileFilteringOptions)) {
+      return `File path '${resolvedPath}' is ignored by configured ignore patterns.`;
     }
 
     return null;
@@ -219,7 +225,16 @@ export class ReadFileTool extends BaseDeclarativeTool<
 
   protected createInvocation(
     params: ReadFileToolParams,
+    messageBus?: MessageBus,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ): ToolInvocation<ReadFileToolParams, ToolResult> {
-    return new ReadFileToolInvocation(this.config, params);
+    return new ReadFileToolInvocation(
+      this.config,
+      params,
+      messageBus,
+      _toolName,
+      _toolDisplayName,
+    );
   }
 }
