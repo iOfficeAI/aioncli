@@ -790,9 +790,11 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
   private convertGeminiParametersToOpenAI(
     parameters: Record<string, unknown>,
-  ): Record<string, unknown> | undefined {
+  ): Record<string, unknown> {
+    // DeepSeek and some other OpenAI-compatible APIs require type: 'object'
+    // They don't accept null or undefined parameters
     if (!parameters || typeof parameters !== 'object') {
-      return parameters;
+      return { type: 'object', properties: {} };
     }
 
     const converted = JSON.parse(JSON.stringify(parameters));
@@ -808,15 +810,22 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       const result: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(obj)) {
-        if (key === 'type' && typeof value === 'string') {
-          // Convert Gemini types to OpenAI JSON Schema types
-          const lowerValue = value.toLowerCase();
-          if (lowerValue === 'integer') {
-            result[key] = 'integer';
-          } else if (lowerValue === 'number') {
-            result[key] = 'number';
+        if (key === 'type') {
+          // Handle type: null - convert to 'object' for DeepSeek compatibility
+          if (value === null || value === undefined) {
+            result[key] = 'object';
+          } else if (typeof value === 'string') {
+            // Convert Gemini types to OpenAI JSON Schema types
+            const lowerValue = value.toLowerCase();
+            if (lowerValue === 'integer') {
+              result[key] = 'integer';
+            } else if (lowerValue === 'number') {
+              result[key] = 'number';
+            } else {
+              result[key] = lowerValue;
+            }
           } else {
-            result[key] = lowerValue;
+            result[key] = value;
           }
         } else if (
           key === 'minimum' ||
@@ -847,10 +856,26 @@ export class OpenAIContentGenerator implements ContentGenerator {
           result[key] = value;
         }
       }
+
+      // Ensure the result has a valid type if it has properties but no type
+      if (result['properties'] && !result['type']) {
+        result['type'] = 'object';
+      }
+
       return result;
     };
 
-    return convertTypes(converted) as Record<string, unknown> | undefined;
+    const result = convertTypes(converted) as Record<string, unknown>;
+
+    // Final safety check: ensure root level has type: 'object'
+    if (!result['type'] || result['type'] === null) {
+      result['type'] = 'object';
+    }
+    if (!result['properties']) {
+      result['properties'] = {};
+    }
+
+    return result;
   }
 
   private async convertGeminiToolsToOpenAI(
@@ -1030,7 +1055,46 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
     // Clean up orphaned tool calls and merge consecutive assistant messages
     const cleanedMessages = this.cleanOrphanedToolCalls(messages);
-    return this.mergeConsecutiveAssistantMessages(cleanedMessages);
+    const mergedMessages =
+      this.mergeConsecutiveAssistantMessages(cleanedMessages);
+
+    // Add reasoning_content for DeepSeek Reasoner models
+    if (this.isDeepSeekReasonerModel()) {
+      return this.addReasoningContentForDeepSeek(mergedMessages);
+    }
+
+    return mergedMessages;
+  }
+
+  /**
+   * Check if the current model is a DeepSeek Reasoner model
+   */
+  private isDeepSeekReasonerModel(): boolean {
+    const modelName = this.model.toLowerCase();
+    return (
+      modelName.includes('deepseek-reasoner') ||
+      modelName.includes('deepseek-r1')
+    );
+  }
+
+  /**
+   * Add reasoning_content field to assistant messages for DeepSeek Reasoner compatibility.
+   * DeepSeek Reasoner models require reasoning_content field in assistant messages during tool calls.
+   */
+  private addReasoningContentForDeepSeek(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    return messages.map((message) => {
+      if (message.role === 'assistant') {
+        // Add reasoning_content field if not present
+        // DeepSeek requires this field for multi-turn conversations with tool calls
+        return {
+          ...message,
+          reasoning_content: '',
+        } as OpenAI.Chat.ChatCompletionMessageParam;
+      }
+      return message;
+    });
   }
 
   /**
