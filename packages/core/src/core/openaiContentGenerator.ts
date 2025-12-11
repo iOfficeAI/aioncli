@@ -811,10 +811,23 @@ export class OpenAIContentGenerator implements ContentGenerator {
       const result: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(obj)) {
         if (key === 'type') {
+          // 处理 type: null - 转换为 'object' 以兼容 DeepSeek
           // Handle type: null - convert to 'object' for DeepSeek compatibility
           if (value === null || value === undefined) {
             result[key] = 'object';
+          } else if (Array.isArray(value)) {
+            // 处理数组类型，如 ["object", "null"] - 提取主要类型
+            // Handle array types like ["object", "null"] - extract the primary type
+            // OpenAI 不接受数组类型，只接受单一字符串类型
+            // OpenAI doesn't accept array types, only single string types
+            const primaryType = value.find(
+              (t) => typeof t === 'string' && t.toLowerCase() !== 'null',
+            );
+            result[key] = primaryType
+              ? String(primaryType).toLowerCase()
+              : 'object';
           } else if (typeof value === 'string') {
+            // 将 Gemini 类型转换为 OpenAI JSON Schema 类型
             // Convert Gemini types to OpenAI JSON Schema types
             const lowerValue = value.toLowerCase();
             if (lowerValue === 'integer') {
@@ -868,8 +881,20 @@ export class OpenAIContentGenerator implements ContentGenerator {
     const result = convertTypes(converted) as Record<string, unknown>;
 
     // Final safety check: ensure root level has type: 'object'
-    if (!result['type'] || result['type'] === null) {
+    // Some tools might have type as array like ["object", "null"] which OpenAI doesn't accept
+    if (
+      !result['type'] ||
+      result['type'] === null ||
+      Array.isArray(result['type'])
+    ) {
       result['type'] = 'object';
+    }
+    // Ensure type is lowercase string 'object' (not 'OBJECT' or other variations)
+    if (typeof result['type'] === 'string' && result['type'] !== 'object') {
+      const lowerType = result['type'].toLowerCase();
+      if (lowerType === 'object') {
+        result['type'] = 'object';
+      }
     }
     if (!result['properties']) {
       result['properties'] = {};
@@ -1098,7 +1123,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
   }
 
   /**
-   * Clean up orphaned tool calls from message history to prevent OpenAI API errors
+   * 清理消息历史中的孤立工具调用，防止 OpenAI API 报错。
+   * 同时对相同 tool_call_id 的工具响应进行去重，防止不接受重复响应的 API 返回 400 错误。
+   *
+   * Clean up orphaned tool calls from message history to prevent OpenAI API errors.
+   * Also deduplicates tool responses with the same tool_call_id to prevent 400 errors
+   * from providers that don't accept duplicate responses for the same tool call.
    */
   private cleanOrphanedToolCalls(
     messages: OpenAI.Chat.ChatCompletionMessageParam[],
@@ -1106,7 +1136,11 @@ export class OpenAIContentGenerator implements ContentGenerator {
     const cleaned: OpenAI.Chat.ChatCompletionMessageParam[] = [];
     const toolCallIds = new Set<string>();
     const toolResponseIds = new Set<string>();
+    // 追踪已添加的工具响应，用于去重
+    // Track tool responses we've already added to deduplicate
+    const addedToolResponseIds = new Set<string>();
 
+    // 第一遍：收集所有工具调用 ID 和工具响应 ID
     // First pass: collect all tool call IDs and tool response IDs
     for (const message of messages) {
       if (
@@ -1128,19 +1162,22 @@ export class OpenAIContentGenerator implements ContentGenerator {
       }
     }
 
-    // Second pass: filter out orphaned messages
+    // 第二遍：过滤孤立消息并对工具响应去重
+    // Second pass: filter out orphaned messages and deduplicate tool responses
     for (const message of messages) {
       if (
         message.role === 'assistant' &&
         'tool_calls' in message &&
         message.tool_calls
       ) {
+        // 过滤掉没有对应响应的工具调用
         // Filter out tool calls that don't have corresponding responses
         const validToolCalls = message.tool_calls.filter(
           (toolCall) => toolCall.id && toolResponseIds.has(toolCall.id),
         );
 
         if (validToolCalls.length > 0) {
+          // 保留消息，但只包含有效的工具调用
           // Keep the message but only with valid tool calls
           const cleanedMessage = { ...message };
           (
@@ -1153,6 +1190,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
           typeof message.content === 'string' &&
           message.content.trim()
         ) {
+          // 如果消息有文本内容，保留消息但移除工具调用
           // Keep the message if it has text content, but remove tool calls
           const cleanedMessage = { ...message };
           delete (
@@ -1162,17 +1200,25 @@ export class OpenAIContentGenerator implements ContentGenerator {
           ).tool_calls;
           cleaned.push(cleanedMessage);
         }
+        // 如果没有有效的工具调用且没有内容，则完全跳过该消息
         // If no valid tool calls and no content, skip the message entirely
       } else if (
         message.role === 'tool' &&
         'tool_call_id' in message &&
         message.tool_call_id
       ) {
+        // 只保留有对应工具调用的工具响应，并跳过重复项（相同的 tool_call_id 已添加）
         // Only keep tool responses that have corresponding tool calls
-        if (toolCallIds.has(message.tool_call_id)) {
+        // AND skip duplicates (same tool_call_id already added)
+        if (
+          toolCallIds.has(message.tool_call_id) &&
+          !addedToolResponseIds.has(message.tool_call_id)
+        ) {
           cleaned.push(message);
+          addedToolResponseIds.add(message.tool_call_id);
         }
       } else {
+        // 保留所有其他消息
         // Keep all other messages as-is
         cleaned.push(message);
       }
