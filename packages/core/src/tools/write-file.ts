@@ -68,6 +68,11 @@ export interface WriteFileToolParams {
    * Initially proposed content.
    */
   ai_proposed_content?: string;
+
+  /**
+   * Alias for file_path (for compatibility with some models)
+   */
+  path?: string;
 }
 
 interface GetCorrectedFileContentResult {
@@ -419,12 +424,17 @@ export class WriteFileTool
             description: 'The path to the file to write to.',
             type: 'string',
           },
+          path: {
+            description:
+              'Alias for file_path (for compatibility with some models).',
+            type: 'string',
+          },
           content: {
             description: 'The content to write to the file.',
             type: 'string',
           },
         },
-        required: ['file_path', 'content'],
+        required: ['content'],
         type: 'object',
       },
       true,
@@ -436,10 +446,15 @@ export class WriteFileTool
   protected override validateToolParamValues(
     params: WriteFileToolParams,
   ): string | null {
+    // Normalize: support 'path' as alias for 'file_path'
+    if (!params.file_path && params.path) {
+      params.file_path = params.path;
+    }
+
     const filePath = params.file_path;
 
     if (!filePath) {
-      return `Missing or empty "file_path"`;
+      return `Missing or empty "file_path" (or "path")`;
     }
 
     const resolvedPath = path.resolve(this.config.getTargetDir(), filePath);

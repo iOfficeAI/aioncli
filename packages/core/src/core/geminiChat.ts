@@ -501,7 +501,45 @@ export class GeminiChat {
       : this.history;
     // Deep copy the history to avoid mutating the history outside of the
     // chat session.
-    return structuredClone(history);
+    const clonedHistory = structuredClone(history);
+    // Deduplicate functionResponse parts with the same id to prevent 400 errors
+    // from providers that don't accept duplicate responses for the same tool call.
+    return this.deduplicateFunctionResponses(clonedHistory);
+  }
+
+  /**
+   * Deduplicates functionResponse parts with the same id across all messages.
+   * This prevents 400 errors from API providers that reject duplicate tool responses.
+   */
+  private deduplicateFunctionResponses(history: Content[]): Content[] {
+    const seenFunctionResponseIds = new Set<string>();
+    const result: Content[] = [];
+
+    for (const content of history) {
+      if (!content.parts || content.parts.length === 0) {
+        result.push(content);
+        continue;
+      }
+
+      const filteredParts = content.parts.filter((part) => {
+        if ('functionResponse' in part && part.functionResponse?.id) {
+          const id = part.functionResponse.id;
+          if (seenFunctionResponseIds.has(id)) {
+            // Skip duplicate functionResponse
+            return false;
+          }
+          seenFunctionResponseIds.add(id);
+        }
+        return true;
+      });
+
+      // Only include content if it still has parts after filtering
+      if (filteredParts.length > 0) {
+        result.push({ ...content, parts: filteredParts });
+      }
+    }
+
+    return result;
   }
 
   /**
