@@ -29,7 +29,6 @@ import {
 import type { GeminiChat } from './geminiChat.js';
 import { InvalidStreamError } from './geminiChat.js';
 import { parseThought, type ThoughtSummary } from '../utils/thoughtUtils.js';
-import { createUserContent } from '@google/genai';
 import type { ModelConfigKey } from '../services/modelConfigService.js';
 
 // Define a structure for tools passed to the server
@@ -339,10 +338,10 @@ export class Turn {
         throw error;
       }
 
-      const contextForReport = [
-        ...this.chat.getHistory(/*curated*/ true),
-        createUserContent(req),
-      ];
+      // Note: getHistory(true) already includes the current request (req) since it was
+      // pushed to history at the start of sendMessageStream. We don't need to add
+      // createUserContent(req) again as it would create duplicate entries in the context.
+      const contextForReport = this.chat.getHistory(/*curated*/ true);
       await reportError(
         error,
         'Error when talking to Gemini API',

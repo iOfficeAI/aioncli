@@ -18,12 +18,67 @@ import { debugLogger } from './debugLogger.js';
 
 const requireModule = createModuleRequire(import.meta.url);
 
+/**
+ * Try multiple strategies to find a WASM file:
+ * 1. require.resolve from import.meta.url context
+ * 2. require.resolve from process.cwd() context (for Electron packaged apps)
+ * 3. Direct path in node_modules relative to process.cwd()
+ */
 export async function readWasmBinaryFromDisk(
   specifier: string,
 ): Promise<Uint8Array> {
-  const resolvedPath = requireModule.resolve(specifier);
-  const buffer = await fsPromises.readFile(resolvedPath);
-  return new Uint8Array(buffer);
+  const errors: Error[] = [];
+
+  // Strategy 1: Standard require.resolve from import.meta.url
+  try {
+    const resolvedPath = requireModule.resolve(specifier);
+    const buffer = await fsPromises.readFile(resolvedPath);
+    return new Uint8Array(buffer);
+  } catch (error) {
+    errors.push(error as Error);
+  }
+
+  // Strategy 2: require.resolve from process.cwd() context (for Electron)
+  try {
+    const cwdRequire = createModuleRequire(
+      path.join(process.cwd(), 'package.json'),
+    );
+    const resolvedPath = cwdRequire.resolve(specifier);
+    const buffer = await fsPromises.readFile(resolvedPath);
+    return new Uint8Array(buffer);
+  } catch (error) {
+    errors.push(error as Error);
+  }
+
+  // Strategy 3: Direct path lookup in node_modules
+  try {
+    const directPath = path.join(process.cwd(), 'node_modules', specifier);
+    const buffer = await fsPromises.readFile(directPath);
+    return new Uint8Array(buffer);
+  } catch (error) {
+    errors.push(error as Error);
+  }
+
+  // Strategy 4: Check if running in Electron and try app.getAppPath()
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, no-restricted-syntax
+    const electron = require('electron');
+    if (electron?.app?.getAppPath) {
+      const appPath = electron.app.getAppPath();
+      const electronPath = path.join(appPath, 'node_modules', specifier);
+      const buffer = await fsPromises.readFile(electronPath);
+      return new Uint8Array(buffer);
+    }
+  } catch {
+    // Not in Electron or app not available
+  }
+
+  // All strategies failed
+  debugLogger.warn(
+    `Failed to load WASM file: ${specifier}`,
+    errors.map((e) => e.message).join('; '),
+  );
+  throw errors[0] || new Error(`Cannot find WASM file: ${specifier}`);
 }
 
 export async function loadWasmBinary(
