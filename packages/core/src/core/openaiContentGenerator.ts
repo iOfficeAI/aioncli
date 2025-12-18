@@ -42,6 +42,9 @@ interface OpenAIMessage {
   content: string | null;
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
+  // OpenRouter reasoning models (Gemini 3 Pro, etc.) require reasoning_details to be preserved
+  // across multi-turn tool calls, otherwise returns 400 error
+  reasoning_details?: unknown;
 }
 
 interface OpenAIUsage {
@@ -77,6 +80,9 @@ interface OpenAIResponseFormat {
   usage?: OpenAIUsage;
 }
 
+// Special marker for reasoning_details in Part text
+const REASONING_DETAILS_MARKER = '__OPENROUTER_REASONING_DETAILS__:';
+
 export class OpenAIContentGenerator implements ContentGenerator {
   protected client: OpenAI;
   private model: string;
@@ -87,8 +93,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
       id?: string;
       name?: string;
       arguments: string;
+      // thought_signature is required for Gemini 3 Pro reasoning models
+      // When provided via OpenRouter, we need to preserve it in functionCall parts
+      thought_signature?: string;
     }
   > = new Map();
+  // Store reasoning_details for OpenRouter reasoning models (Gemini 3 Pro, etc.)
+  private streamingReasoningDetails: unknown = null;
 
   constructor(apiKey: string, model: string, config: Config) {
     this.model = model;
@@ -278,7 +289,19 @@ export class OpenAIContentGenerator implements ContentGenerator {
           request.config.tools,
         );
       }
-      // console.log('createParams', createParams);
+
+      // Enable reasoning for Gemini 3 models on OpenRouter
+      // This ensures reasoning_details are returned and can be preserved
+      const baseURL = this.client?.baseURL || '';
+      const isOpenRouter = baseURL.includes('openrouter.ai');
+      if (isOpenRouter && this.isGeminiReasoningModel()) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (createParams as any).reasoning = {
+          // Use 'high' effort for reliable reasoning token generation
+          effort: 'high',
+        };
+      }
+
       const completion = (await this.client.chat.completions.create(
         createParams,
       )) as OpenAI.Chat.ChatCompletion;
@@ -444,7 +467,17 @@ export class OpenAIContentGenerator implements ContentGenerator {
         );
       }
 
-      // console.log('createParams', createParams);
+      // Enable reasoning for Gemini 3 models on OpenRouter
+      // This ensures reasoning_details are returned and can be preserved
+      const baseURL = this.client?.baseURL || '';
+      const isOpenRouter = baseURL.includes('openrouter.ai');
+      if (isOpenRouter && this.isGeminiReasoningModel()) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (createParams as any).reasoning = {
+          // Use 'high' effort for reliable reasoning token generation
+          effort: 'high',
+        };
+      }
 
       const stream = (await this.client.chat.completions.create(
         createParams,
@@ -631,8 +664,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
     stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
     isJsonSchemaRequest: boolean = false,
   ): AsyncGenerator<GenerateContentResponse> {
-    // Reset the accumulator for each new stream
+    // Reset the accumulators for each new stream
     this.streamingToolCalls.clear();
+    this.streamingReasoningDetails = null;
 
     for await (const chunk of stream) {
       yield this.convertStreamChunkToGeminiFormat(chunk, isJsonSchemaRequest);
@@ -1005,14 +1039,50 @@ export class OpenAIContentGenerator implements ContentGenerator {
           const functionCalls: FunctionCall[] = [];
           const functionResponses: FunctionResponse[] = [];
           const textParts: string[] = [];
+          let reasoningDetails: unknown = null;
 
           for (const part of content.parts || []) {
             if (typeof part === 'string') {
-              textParts.push(part);
+              // Filter out any leaked reasoning_details marker from string parts
+              const cleanedString = this.filterReasoningDetailsMarker(part);
+              if (cleanedString) {
+                textParts.push(cleanedString);
+              }
             } else if ('text' in part && part.text) {
-              textParts.push(part.text);
+              // Check for special reasoning_details marker (OpenRouter reasoning models)
+              if (
+                part.thought &&
+                part.text.startsWith(REASONING_DETAILS_MARKER)
+              ) {
+                try {
+                  reasoningDetails = JSON.parse(
+                    part.text.slice(REASONING_DETAILS_MARKER.length),
+                  );
+                } catch {
+                  // Invalid JSON, ignore
+                }
+              } else if (!part.thought) {
+                // Only include non-thought text parts, filter out any leaked markers
+                const cleanedText = this.filterReasoningDetailsMarker(
+                  part.text,
+                );
+                if (cleanedText) {
+                  textParts.push(cleanedText);
+                }
+              }
             } else if ('functionCall' in part && part.functionCall) {
               functionCalls.push(part.functionCall);
+              // Check for thoughtSignature on the Part (Gemini format)
+              // This is required for OpenRouter/Gemini reasoning models
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const partAny = part as any;
+              if (partAny.thoughtSignature && !reasoningDetails) {
+                // Only use the first thoughtSignature (parallel calls only have one)
+                // Validate thoughtSignature before using it to prevent "Corrupted thought signature" errors
+                if (this.isValidThoughtSignature(partAny.thoughtSignature)) {
+                  reasoningDetails = partAny.thoughtSignature;
+                }
+              }
             } else if ('functionResponse' in part && part.functionResponse) {
               functionResponses.push(part.functionResponse);
             }
@@ -1042,11 +1112,20 @@ export class OpenAIContentGenerator implements ContentGenerator {
               },
             }));
 
-            messages.push({
+            const assistantMessage: OpenAI.Chat.ChatCompletionMessageParam & {
+              reasoning_details?: unknown;
+            } = {
               role: 'assistant' as const,
               content: textParts.join('\n') || null,
               tool_calls: toolCalls,
-            });
+            };
+            // Add reasoning_details if present (required for OpenRouter reasoning models)
+            if (reasoningDetails) {
+              assistantMessage.reasoning_details = reasoningDetails;
+            }
+            messages.push(
+              assistantMessage as OpenAI.Chat.ChatCompletionMessageParam,
+            );
           }
           // Handle regular text messages
           else {
@@ -1056,14 +1135,26 @@ export class OpenAIContentGenerator implements ContentGenerator {
                 : ('user' as const);
             const text = textParts.join('\n');
             if (text) {
-              messages.push({ role, content: text });
+              const message: OpenAI.Chat.ChatCompletionMessageParam & {
+                reasoning_details?: unknown;
+              } = { role, content: text };
+              // Add reasoning_details if present and this is an assistant message
+              if (role === 'assistant' && reasoningDetails) {
+                message.reasoning_details = reasoningDetails;
+              }
+              messages.push(message as OpenAI.Chat.ChatCompletionMessageParam);
             }
           }
         }
       }
     } else if (request.contents) {
       if (typeof request.contents === 'string') {
-        messages.push({ role: 'user' as const, content: request.contents });
+        const cleanedContent = this.filterReasoningDetailsMarker(
+          request.contents,
+        );
+        if (cleanedContent) {
+          messages.push({ role: 'user' as const, content: cleanedContent });
+        }
       } else if ('role' in request.contents && 'parts' in request.contents) {
         const content = request.contents;
         const role =
@@ -1074,7 +1165,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
               typeof p === 'string' ? p : 'text' in p ? p.text : '',
             )
             .join('\n') || '';
-        messages.push({ role, content: text });
+        const cleanedText = this.filterReasoningDetailsMarker(text);
+        if (cleanedText) {
+          messages.push({ role, content: cleanedText });
+        }
       }
     }
 
@@ -1103,6 +1197,85 @@ export class OpenAIContentGenerator implements ContentGenerator {
   }
 
   /**
+   * Check if the current model is a Gemini reasoning model (Gemini 3, 2.5 series)
+   * These models require reasoning_details/thought_signature for tool calls
+   */
+  private isGeminiReasoningModel(): boolean {
+    const modelName = this.model.toLowerCase();
+    return (
+      modelName.includes('gemini-3') ||
+      modelName.includes('gemini-2.5') ||
+      modelName.includes('gemini-exp') ||
+      modelName.includes('gemini-2.0-flash-thinking')
+    );
+  }
+
+  /**
+   * Validate thoughtSignature to prevent "Corrupted thought signature" errors.
+   * Valid thoughtSignature should have properly encrypted data (long base64 strings).
+   * Invalid ones may contain short UUIDs or corrupted data.
+   *
+   * 验证 thoughtSignature 以防止 "Corrupted thought signature" 错误。
+   * 有效的 thoughtSignature 应该包含正确加密的数据（长 base64 字符串）。
+   * 无效的可能包含短 UUID 或损坏的数据。
+   */
+  private isValidThoughtSignature(thoughtSignature: unknown): boolean {
+    if (!thoughtSignature) {
+      return false;
+    }
+
+    // thoughtSignature can be an array of signature objects or a single object
+    const signatures = Array.isArray(thoughtSignature)
+      ? thoughtSignature
+      : [thoughtSignature];
+
+    for (const sig of signatures) {
+      if (typeof sig !== 'object' || sig === null) {
+        continue;
+      }
+
+      const sigObj = sig as Record<string, unknown>;
+      const data = sigObj['data'];
+
+      // Check if data field exists and is a string
+      if (typeof data !== 'string') {
+        return false;
+      }
+
+      // Valid encrypted data should be significantly longer than a UUID (36 chars)
+      // A UUID in base64 is about 48 chars. Valid reasoning data is typically 100+ chars.
+      // We use 64 as a threshold to filter out UUID-like corrupted data.
+      const MIN_VALID_DATA_LENGTH = 64;
+
+      if (data.length < MIN_VALID_DATA_LENGTH) {
+        return false;
+      }
+
+      // Additional check: valid data should start with certain prefixes (Ci, Ev, etc.)
+      // which are common in Google's encrypted reasoning data
+      const validPrefixes = ['Ci', 'Ev', 'Ch', 'Co'];
+      const hasValidPrefix = validPrefixes.some((prefix) =>
+        data.startsWith(prefix),
+      );
+
+      if (!hasValidPrefix) {
+        // Check if it looks like a base64-encoded UUID (starts with ZT, ND, etc.)
+        // These are typically invalid
+        const uuidBase64Prefixes = ['ZT', 'ND', 'MW', 'Yz', 'OD'];
+        const looksLikeUuid = uuidBase64Prefixes.some((prefix) =>
+          data.startsWith(prefix),
+        );
+
+        if (looksLikeUuid && data.length < 100) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * Add reasoning_content field to assistant messages for DeepSeek Reasoner compatibility.
    * DeepSeek Reasoner models require reasoning_content field in assistant messages during tool calls.
    */
@@ -1120,6 +1293,26 @@ export class OpenAIContentGenerator implements ContentGenerator {
       }
       return message;
     });
+  }
+
+  /**
+   * Filter out REASONING_DETAILS_MARKER from text to prevent it from leaking
+   * into messages sent to the model. This can happen when AionUI includes
+   * conversation history that contains the marker.
+   *
+   * 过滤文本中的 REASONING_DETAILS_MARKER，防止其泄露到发送给模型的消息中。
+   * 这种情况可能发生在 AionUI 包含含有 marker 的对话历史时。
+   */
+  private filterReasoningDetailsMarker(text: string): string {
+    if (!text.includes(REASONING_DETAILS_MARKER)) {
+      return text;
+    }
+    // Remove lines containing the marker (typically: "Assistant: __OPENROUTER_REASONING_DETAILS__:[...]")
+    const lines = text.split('\n');
+    const filteredLines = lines.filter(
+      (line) => !line.includes(REASONING_DETAILS_MARKER),
+    );
+    return filteredLines.join('\n').trim();
   }
 
   /**
@@ -1382,16 +1575,53 @@ export class OpenAIContentGenerator implements ContentGenerator {
             parts.push({ text: JSON.stringify(args) });
           } else {
             // Regular tool call handling
-            parts.push({
+            // Include thoughtSignature if present (required for Gemini reasoning models)
+            // Note: thoughtSignature is a SIBLING of functionCall in the Part, not inside it
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const functionCallPart: Part & { thoughtSignature?: any } = {
               functionCall: {
                 id: toolCall.id,
                 name: toolCall.function.name,
                 args,
               },
-            });
+            };
+            // Check for thought_signature in the tool call (OpenRouter/Gemini)
+            // Validate before attaching to prevent "Corrupted thought signature" errors
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const toolCallAny = toolCall as any;
+            const thoughtSig =
+              toolCallAny.thought_signature ||
+              toolCallAny.thoughtSignature ||
+              toolCallAny.function?.thought_signature;
+            if (thoughtSig && this.isValidThoughtSignature(thoughtSig)) {
+              functionCallPart.thoughtSignature = thoughtSig;
+            }
+            parts.push(functionCallPart);
           }
         }
       }
+    }
+
+    // Handle reasoning_details from OpenRouter reasoning models (Gemini 3 Pro, etc.)
+    // Only preserve reasoning_details when there are functionCall parts (for multi-turn tool calls)
+    // For text-only responses, reasoning_details is not needed
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messageReasoningDetails = (choice.message as any)?.reasoning_details;
+    // Validate reasoning_details before attaching to prevent "Corrupted thought signature" errors
+    if (
+      messageReasoningDetails &&
+      this.isValidThoughtSignature(messageReasoningDetails)
+    ) {
+      // Attach reasoning_details to the FIRST functionCall Part as thoughtSignature
+      // This is required for Gemini API to process tool calls correctly
+      const firstFunctionCallPart = parts.find(
+        (p) => 'functionCall' in p,
+      ) as Part & { thoughtSignature?: unknown };
+      if (firstFunctionCallPart && !firstFunctionCallPart.thoughtSignature) {
+        firstFunctionCallPart.thoughtSignature = messageReasoningDetails;
+      }
+      // For text-only responses, we don't need to preserve reasoning_details
+      // as they are only required for multi-turn tool calls
     }
 
     response.responseId = openaiResponse.id;
@@ -1449,6 +1679,8 @@ export class OpenAIContentGenerator implements ContentGenerator {
     chunk: OpenAI.Chat.ChatCompletionChunk,
     isJsonSchemaRequest: boolean = false,
   ): GenerateContentResponse {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chunkAny = chunk as any;
     const choice = chunk.choices?.[0];
     const response = new GenerateContentResponse();
 
@@ -1458,6 +1690,22 @@ export class OpenAIContentGenerator implements ContentGenerator {
       // Handle text content
       if (choice.delta?.content) {
         parts.push({ text: choice.delta.content });
+      }
+
+      // Capture reasoning_details from OpenRouter reasoning models (Gemini 3 Pro, etc.)
+      // Check multiple possible locations where it might be returned
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const choiceAny = choice as any;
+      const deltaReasoningDetails =
+        choiceAny.delta?.reasoning_details ||
+        choiceAny.reasoning_details ||
+        chunkAny.reasoning_details;
+      // Validate reasoning_details before storing to prevent corrupted data propagation
+      if (
+        deltaReasoningDetails &&
+        this.isValidThoughtSignature(deltaReasoningDetails)
+      ) {
+        this.streamingReasoningDetails = deltaReasoningDetails;
       }
 
       // Handle tool calls - only accumulate during streaming, emit when complete
@@ -1482,6 +1730,15 @@ export class OpenAIContentGenerator implements ContentGenerator {
           if (toolCall.function?.arguments) {
             accumulatedCall.arguments += toolCall.function.arguments;
           }
+          // Capture thought_signature for OpenRouter/Gemini reasoning models
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const toolCallAny = toolCall as any;
+          if (toolCallAny.thought_signature) {
+            accumulatedCall.thought_signature = toolCallAny.thought_signature;
+          } else if (toolCallAny.function?.thought_signature) {
+            accumulatedCall.thought_signature =
+              toolCallAny.function.thought_signature;
+          }
         }
       }
 
@@ -1505,18 +1762,45 @@ export class OpenAIContentGenerator implements ContentGenerator {
               parts.push({ text: JSON.stringify(args) });
             } else {
               // Regular tool call handling
-              parts.push({
+              // Include thoughtSignature if present (required for Gemini reasoning models)
+              // Note: thoughtSignature is a SIBLING of functionCall in the Part, not inside it
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const functionCallPart: Part & { thoughtSignature?: any } = {
                 functionCall: {
                   id: accumulatedCall.id,
                   name: accumulatedCall.name,
                   args,
-                },
-              });
+                } as FunctionCall,
+              };
+              // Add thoughtSignature as sibling of functionCall (Gemini format)
+              // For the FIRST functionCall, attach the reasoning_details as thoughtSignature
+              // Validate before attaching to prevent "Corrupted thought signature" errors
+              if (
+                accumulatedCall.thought_signature &&
+                this.isValidThoughtSignature(accumulatedCall.thought_signature)
+              ) {
+                functionCallPart.thoughtSignature =
+                  accumulatedCall.thought_signature;
+              } else if (
+                this.streamingReasoningDetails &&
+                parts.filter((p) => 'functionCall' in p).length === 0
+              ) {
+                // Only attach to the first functionCall (for parallel calls)
+                // Note: streamingReasoningDetails is already validated when stored
+                functionCallPart.thoughtSignature =
+                  this.streamingReasoningDetails;
+              }
+              parts.push(functionCallPart);
             }
           }
         }
         // Clear all accumulated tool calls
         this.streamingToolCalls.clear();
+
+        // Clear reasoning_details after processing
+        // For text-only responses, we don't need to preserve reasoning_details
+        // as they are only required for multi-turn tool calls
+        this.streamingReasoningDetails = null;
       }
 
       response.candidates = [
