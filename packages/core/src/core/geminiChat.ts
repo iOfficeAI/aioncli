@@ -733,15 +733,19 @@ export class GeminiChat {
       });
     }
 
+    // Check if response contains inline data (image generation models like nano-banana-pro)
+    const hasInlineData = consolidatedParts.some((part) => part.inlineData);
+
     // Stream validation logic: A stream is considered successful if:
     // 1. There's a tool call OR
-    // 2. A not MALFORMED_FUNCTION_CALL finish reason and a non-mepty resp
+    // 2. There's inline data (image generation models like nano-banana-pro) OR
+    // 3. A not MALFORMED_FUNCTION_CALL finish reason and a non-empty response text
     //
-    // We throw an error only when there's no tool call AND:
+    // We throw an error only when there's no tool call AND no inline data AND:
     // - No finish reason, OR
     // - MALFORMED_FUNCTION_CALL finish reason OR
     // - Empty response text (e.g., only thoughts with no actual content)
-    if (!hasToolCall) {
+    if (!hasToolCall && !hasInlineData) {
       if (!finishReason) {
         throw new InvalidStreamError(
           'Model stream ended without a finish reason.',

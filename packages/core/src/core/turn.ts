@@ -48,6 +48,7 @@ export interface ServerTool {
 
 export enum GeminiEventType {
   Content = 'content',
+  InlineData = 'inline_data',
   ToolCallRequest = 'tool_call_request',
   ToolCallResponse = 'tool_call_response',
   ToolCallConfirmation = 'tool_call_confirmation',
@@ -129,6 +130,17 @@ export type ServerGeminiContentEvent = {
   traceId?: string;
 };
 
+export interface InlineDataValue {
+  mimeType: string;
+  data: string;
+}
+
+export type ServerGeminiInlineDataEvent = {
+  type: GeminiEventType.InlineData;
+  value: InlineDataValue;
+  traceId?: string;
+};
+
 export type ServerGeminiThoughtEvent = {
   type: GeminiEventType.Thought;
   value: ThoughtSummary;
@@ -207,6 +219,7 @@ export type ServerGeminiStreamEvent =
   | ServerGeminiChatCompressedEvent
   | ServerGeminiCitationEvent
   | ServerGeminiContentEvent
+  | ServerGeminiInlineDataEvent
   | ServerGeminiErrorEvent
   | ServerGeminiFinishedEvent
   | ServerGeminiLoopDetectedEvent
@@ -283,6 +296,21 @@ export class Turn {
         const text = getResponseText(resp);
         if (text) {
           yield { type: GeminiEventType.Content, value: text, traceId };
+        }
+
+        // Handle inline data (image generation models like nano-banana-pro)
+        const parts = resp.candidates?.[0]?.content?.parts ?? [];
+        for (const part of parts) {
+          if (part.inlineData?.mimeType && part.inlineData?.data) {
+            yield {
+              type: GeminiEventType.InlineData,
+              value: {
+                mimeType: part.inlineData.mimeType,
+                data: part.inlineData.data,
+              },
+              traceId,
+            };
+          }
         }
 
         // Handle function calls (requesting tool execution)
