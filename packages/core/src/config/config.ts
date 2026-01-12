@@ -28,6 +28,7 @@ import { SmartEditTool } from '../tools/smart-edit.js';
 import { ShellTool } from '../tools/shell.js';
 import { WriteFileTool } from '../tools/write-file.js';
 import { WebFetchTool } from '../tools/web-fetch.js';
+import { ActivateSkillTool } from '../tools/activate-skill.js';
 import { MemoryTool, setGeminiMdFilename } from '../tools/memoryTool.js';
 import { WebSearchTool } from '../tools/web-search.js';
 import { GeminiClient } from '../core/client.js';
@@ -86,6 +87,7 @@ import { SubagentToolWrapper } from '../agents/subagent-tool-wrapper.js';
 import { getExperiments } from '../code_assist/experiments/experiments.js';
 import { ExperimentFlags } from '../code_assist/experiments/flagNames.js';
 import { debugLogger } from '../utils/debugLogger.js';
+import { SkillManager, type SkillDefinition } from '../skills/skillManager.js';
 
 import { ApprovalMode } from '../policy/types.js';
 
@@ -141,6 +143,7 @@ export interface GeminiCLIExtension {
   excludeTools?: string[];
   id: string;
   hooks?: { [K in HookEventName]?: HookDefinition[] };
+  skills?: SkillDefinition[];
 }
 
 export interface ExtensionInstallMetadata {
@@ -306,6 +309,8 @@ export interface ConfigParameters {
     [K in HookEventName]?: HookDefinition[];
   };
   previewFeatures?: boolean;
+  skillsSupport?: boolean;
+  disabledSkills?: string[];
 }
 
 export class Config {
@@ -315,6 +320,7 @@ export class Config {
   private blockedMcpServers: string[];
   private promptRegistry!: PromptRegistry;
   private agentRegistry!: AgentRegistry;
+  private skillManager!: SkillManager;
   private sessionId: string;
   private fileSystemService: FileSystemService;
   private contentGeneratorConfig!: ContentGeneratorConfig;
@@ -359,6 +365,8 @@ export class Config {
   private readonly bugCommand: BugCommandSettings | undefined;
   private model: string;
   private previewFeatures: boolean | undefined;
+  private readonly skillsSupport: boolean;
+  private disabledSkills: string[];
   private readonly noBrowser: boolean;
   private readonly folderTrust: boolean;
   private ideMode: boolean;
@@ -481,6 +489,9 @@ export class Config {
     this.bugCommand = params.bugCommand;
     this.model = params.model;
     this.previewFeatures = params.previewFeatures ?? undefined;
+    this.skillsSupport = params.skillsSupport ?? false;
+    this.disabledSkills = params.disabledSkills ?? [];
+    this.skillManager = new SkillManager();
     this.maxSessionTurns = params.maxSessionTurns ?? -1;
     this.experimentalZedIntegration =
       params.experimentalZedIntegration ?? false;
@@ -634,6 +645,25 @@ export class Config {
       await this.mcpClientManager.startConfiguredMcpServers(),
       await this.getExtensionLoader().start(this),
     ]);
+
+    if (this.skillsSupport) {
+      await this.getSkillManager().discoverSkills(
+        this.storage,
+        this.getExtensions(),
+      );
+      this.getSkillManager().setDisabledSkills(this.disabledSkills);
+
+      if (this.getSkillManager().getSkills().length > 0) {
+        this.getToolRegistry().registerTool(
+          new ActivateSkillTool(
+            this,
+            this.getEnableMessageBusIntegration()
+              ? this.getMessageBus()
+              : undefined,
+          ),
+        );
+      }
+    }
 
     await this.geminiClient.initialize();
   }
@@ -842,6 +872,10 @@ export class Config {
 
   getAgentRegistry(): AgentRegistry {
     return this.agentRegistry;
+  }
+
+  getSkillManager(): SkillManager {
+    return this.skillManager;
   }
 
   getToolRegistry(): ToolRegistry {
@@ -1441,6 +1475,7 @@ export class Config {
     }
 
     registerCoreTool(GlobTool, this);
+    registerCoreTool(ActivateSkillTool, this);
     if (this.getUseSmartEdit()) {
       registerCoreTool(SmartEditTool, this);
     } else {

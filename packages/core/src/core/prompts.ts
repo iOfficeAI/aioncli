@@ -16,6 +16,7 @@ import {
   SHELL_TOOL_NAME,
   WRITE_FILE_TOOL_NAME,
   WRITE_TODOS_TOOL_NAME,
+  ACTIVATE_SKILL_TOOL_NAME,
 } from '../tools/tool-names.js';
 import process from 'node:process';
 import { isGitRepository } from '../utils/gitUtils.js';
@@ -112,6 +113,29 @@ export function getCoreSystemPrompt(
     .getAllToolNames()
     .includes(WriteTodosTool.Name);
 
+  const skills = config.getSkillManager().getSkills();
+  let skillsPrompt = '';
+  if (skills.length > 0) {
+    const skillsJson = JSON.stringify(
+      skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        location: skill.location,
+      })),
+      null,
+      2,
+    );
+    skillsPrompt = `
+# Available Agent Skills
+
+You have access to the following specialized skills. To activate a skill and receive its detailed instructions, you can call the \`${ACTIVATE_SKILL_TOOL_NAME}\` tool with the skill's name.
+
+\`\`\`json
+${skillsJson}
+\`\`\`
+`;
+  }
+
   let basePrompt: string;
   if (systemMdEnabled) {
     basePrompt = fs.readFileSync(systemMdPath, 'utf8');
@@ -129,7 +153,12 @@ export function getCoreSystemPrompt(
 - **Proactiveness:** Fulfill the user's request thoroughly. When adding features or fixing bugs, this includes adding tests to ensure quality. Consider all created files, especially tests, to be permanent artifacts unless the user says otherwise.
 - **Confirm Ambiguity/Expansion:** Do not take significant actions beyond the clear scope of the request without confirming with the user. If asked *how* to do something, explain first, don't just do it.
 - **Explaining Changes:** After completing a code modification or file operation *do not* provide summaries unless asked.
-- **Do Not revert changes:** Do not revert changes to the codebase unless asked to do so by the user. Only revert changes made by you if they have resulted in an error or if the user has explicitly asked you to revert the changes.`,
+- **Do Not revert changes:** Do not revert changes to the codebase unless asked to do so by the user. Only revert changes made by you if they have resulted in an error or if the user has explicitly asked you to revert the changes.${
+        skills.length > 0
+          ? `
+- **Skill Guidance:** Once a skill is activated via \`${ACTIVATE_SKILL_TOOL_NAME}\`, its instructions provide specialized rules and workflows for the task. You should integrate these instructions into your approach, prioritizing them where they provide expert guidance while ensuring you remain within your core safety and security mandates.`
+          : ''
+      }`,
 
       primaryWorkflows_prefix: `
 # Primary Workflows
@@ -319,6 +348,7 @@ Your core function is efficient and safe assistance. Balance extreme conciseness
     });
 
     basePrompt = enabledPrompts.map((key) => promptConfig[key]).join('\n');
+    basePrompt = `${basePrompt}${skillsPrompt}`;
   }
 
   // if GEMINI_WRITE_SYSTEM_MD is set (and not 0|false), write base system prompt to file
@@ -326,7 +356,7 @@ Your core function is efficient and safe assistance. Balance extreme conciseness
     process.env['GEMINI_WRITE_SYSTEM_MD'],
   );
 
-  // Check if the feature is enabled. This proceeds only if the environment
+  // Write the base prompt to a file if the GEMINI_WRITE_SYSTEM_MD environment
   // variable is set and is not explicitly '0' or 'false'.
   if (writeSystemMdResolution.value && !writeSystemMdResolution.isDisabled) {
     const writePath = writeSystemMdResolution.isSwitch
@@ -336,6 +366,8 @@ Your core function is efficient and safe assistance. Balance extreme conciseness
     fs.mkdirSync(path.dirname(writePath), { recursive: true });
     fs.writeFileSync(writePath, basePrompt);
   }
+
+  basePrompt = basePrompt.trim();
 
   const memorySuffix =
     userMemory && userMemory.trim().length > 0

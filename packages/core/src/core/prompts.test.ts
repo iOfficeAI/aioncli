@@ -48,6 +48,9 @@ describe('Core System Prompt (prompts.ts)', () => {
       getToolRegistry: vi.fn().mockReturnValue({
         getAllToolNames: vi.fn().mockReturnValue([]),
       }),
+      getSkillManager: vi.fn().mockReturnValue({
+        getSkills: vi.fn().mockReturnValue([]),
+      }),
       getEnableShellOutputEfficiency: vi.fn().mockReturnValue(true),
       storage: {
         getProjectTempDir: vi.fn().mockReturnValue('/tmp/project-temp'),
@@ -77,6 +80,40 @@ describe('Core System Prompt (prompts.ts)', () => {
     expect(prompt.endsWith(expectedSuffix)).toBe(true);
     expect(prompt).toContain('You are an interactive CLI agent'); // Ensure base prompt follows
     expect(prompt).toMatchSnapshot(); // Snapshot the combined prompt
+  });
+
+  it('should include available_skills when provided in config', () => {
+    const skills = [
+      {
+        name: 'test-skill',
+        description: 'A test skill description',
+        location: '/path/to/test-skill/SKILL.md',
+        body: 'Skill content',
+      },
+    ];
+    vi.mocked(mockConfig.getSkillManager().getSkills).mockReturnValue(skills);
+    const prompt = getCoreSystemPrompt(mockConfig);
+
+    expect(prompt).toContain('# Available Agent Skills');
+    expect(prompt).toContain(
+      "To activate a skill and receive its detailed instructions, you can call the `activate_skill` tool with the skill's name.",
+    );
+    expect(prompt).toContain('Skill Guidance');
+    expect(prompt).toContain('```json');
+    expect(prompt).toContain('"name": "test-skill"');
+    expect(prompt).toContain('"description": "A test skill description"');
+    expect(prompt).toContain('"location": "/path/to/test-skill/SKILL.md"');
+    expect(prompt).toContain('```');
+    expect(prompt).toMatchSnapshot();
+  });
+
+  it('should NOT include skill guidance or available_skills when NO skills are provided', () => {
+    vi.mocked(mockConfig.getSkillManager().getSkills).mockReturnValue([]);
+    const prompt = getCoreSystemPrompt(mockConfig);
+
+    expect(prompt).not.toContain('# Available Agent Skills');
+    expect(prompt).not.toContain('Skill Guidance');
+    expect(prompt).not.toContain('activate_skill');
   });
 
   it.each([
@@ -127,6 +164,9 @@ describe('Core System Prompt (prompts.ts)', () => {
       const testConfig = {
         getToolRegistry: vi.fn().mockReturnValue({
           getAllToolNames: vi.fn().mockReturnValue(toolNames),
+        }),
+        getSkillManager: vi.fn().mockReturnValue({
+          getSkills: vi.fn().mockReturnValue([]),
         }),
         getEnableShellOutputEfficiency: vi.fn().mockReturnValue(true),
         storage: {
