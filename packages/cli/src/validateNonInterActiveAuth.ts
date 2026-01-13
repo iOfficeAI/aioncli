@@ -5,7 +5,12 @@
  */
 
 import type { Config } from '@google/gemini-cli-core';
-import { AuthType, debugLogger, OutputFormat } from '@google/gemini-cli-core';
+import {
+  AuthType,
+  debugLogger,
+  OutputFormat,
+  ExitCodes,
+} from '@google/gemini-cli-core';
 import { USER_SETTINGS_PATH } from './config/settings.js';
 import { validateAuthMethod } from './config/auth.js';
 import { type LoadedSettings } from './config/settings.js';
@@ -47,7 +52,7 @@ export async function validateNonInteractiveAuth(
       throw new Error(message);
     }
 
-    const authType: AuthType = effectiveAuthType as AuthType;
+    const authType: AuthType = effectiveAuthType;
 
     if (!useExternalAuth) {
       const err = validateAuthMethod(String(authType));
@@ -56,19 +61,18 @@ export async function validateNonInteractiveAuth(
       }
     }
 
-    await nonInteractiveConfig.refreshAuth(authType);
-    return nonInteractiveConfig;
+    return authType;
   } catch (error) {
     if (nonInteractiveConfig.getOutputFormat() === OutputFormat.JSON) {
       handleError(
         error instanceof Error ? error : new Error(String(error)),
         nonInteractiveConfig,
-        1,
+        ExitCodes.FATAL_AUTHENTICATION_ERROR,
       );
     } else {
       debugLogger.error(error instanceof Error ? error.message : String(error));
       await runExitCleanup();
-      process.exit(1);
+      process.exit(ExitCodes.FATAL_AUTHENTICATION_ERROR);
     }
   }
 }

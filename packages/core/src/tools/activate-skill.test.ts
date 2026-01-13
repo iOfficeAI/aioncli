@@ -6,74 +6,117 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ActivateSkillTool } from './activate-skill.js';
-import { ToolErrorType } from './tool-error.js';
-import { getFolderStructure } from '../utils/getFolderStructure.js';
 import type { Config } from '../config/config.js';
+import type { MessageBus } from '../confirmation-bus/message-bus.js';
+import { createMockMessageBus } from '../test-utils/mock-message-bus.js';
 
 vi.mock('../utils/getFolderStructure.js', () => ({
-  getFolderStructure: vi.fn().mockResolvedValue('mock-structure'),
+  getFolderStructure: vi.fn().mockResolvedValue('Mock folder structure'),
 }));
 
 describe('ActivateSkillTool', () => {
-  const skill = {
-    name: 'test-skill',
-    description: 'Test skill',
-    location: '/tmp/skills/test-skill/SKILL.md',
-    body: 'Do the thing.',
-  };
-
-  const getConfig = () => {
-    const skillManager = {
-      getSkills: vi.fn().mockReturnValue([skill]),
-      getSkill: vi.fn().mockReturnValue(skill),
-      activateSkill: vi.fn(),
-    };
-    const workspaceContext = {
-      addDirectory: vi.fn(),
-    };
-    return {
-      getSkillManager: () => skillManager,
-      getWorkspaceContext: () => workspaceContext,
-    };
-  };
+  let mockConfig: Config;
+  let tool: ActivateSkillTool;
+  let mockMessageBus: MessageBus;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockMessageBus = createMockMessageBus();
+    const skills = [
+      {
+        name: 'test-skill',
+        description: 'A test skill',
+        location: '/path/to/test-skill/SKILL.md',
+      },
+    ];
+    mockConfig = {
+      getWorkspaceContext: vi.fn().mockReturnValue({
+        addDirectory: vi.fn(),
+      }),
+      getSkillManager: vi.fn().mockReturnValue({
+        getSkills: vi.fn().mockReturnValue(skills),
+        getAllSkills: vi.fn().mockReturnValue(skills),
+        getSkill: vi.fn().mockImplementation((name: string) => {
+          if (name === 'test-skill') {
+            return {
+              name: 'test-skill',
+              description: 'A test skill',
+              location: '/path/to/test-skill/SKILL.md',
+              body: 'Skill instructions content.',
+            };
+          }
+          return null;
+        }),
+        activateSkill: vi.fn(),
+      }),
+    } as unknown as Config;
+    tool = new ActivateSkillTool(mockConfig, mockMessageBus);
   });
 
-  it('activates a skill and returns instructions and resources', async () => {
-    const config = getConfig() as unknown as Config;
-    const tool = new ActivateSkillTool(config);
-    const invocation = tool.build({ name: 'test-skill' });
+  it('should return enhanced description', () => {
+    const params = { name: 'test-skill' };
+    const invocation = tool.build(params);
+    expect(invocation.getDescription()).toBe('"test-skill": A test skill');
+  });
+
+  it('should return enhanced confirmation details', async () => {
+    const params = { name: 'test-skill' };
+    const invocation = tool.build(params);
+    const details = await (
+      invocation as unknown as {
+        getConfirmationDetails: (signal: AbortSignal) => Promise<{
+          prompt: string;
+          title: string;
+        }>;
+      }
+    ).getConfirmationDetails(new AbortController().signal);
+
+    expect(details.title).toBe('Activate Skill: test-skill');
+    expect(details.prompt).toContain('enable the specialized agent skill');
+    expect(details.prompt).toContain('A test skill');
+    expect(details.prompt).toContain('Mock folder structure');
+  });
+
+  it('should activate a valid skill and return its content in XML tags', async () => {
+    const params = { name: 'test-skill' };
+    const invocation = tool.build(params);
     const result = await invocation.execute(new AbortController().signal);
 
-    expect(config.getSkillManager().activateSkill).toHaveBeenCalledWith(
+    expect(mockConfig.getSkillManager().activateSkill).toHaveBeenCalledWith(
       'test-skill',
     );
-    expect(config.getWorkspaceContext().addDirectory).toHaveBeenCalledWith(
-      '/tmp/skills/test-skill',
+    expect(mockConfig.getWorkspaceContext().addDirectory).toHaveBeenCalledWith(
+      '/path/to/test-skill',
     );
-    expect(getFolderStructure).toHaveBeenCalledWith('/tmp/skills/test-skill');
-    expect(String(result.llmContent)).toContain(
-      '<activated_skill name="test-skill">',
-    );
-    expect(String(result.llmContent)).toContain('Do the thing.');
-    expect(String(result.returnDisplay)).toContain(
-      'Skill **test-skill** activated.',
-    );
+    expect(result.llmContent).toContain('<ACTIVATED_SKILL name="test-skill">');
+    expect(result.llmContent).toContain('<INSTRUCTIONS>');
+    expect(result.llmContent).toContain('Skill instructions content.');
+    expect(result.llmContent).toContain('</INSTRUCTIONS>');
+    expect(result.llmContent).toContain('<AVAILABLE_RESOURCES>');
+    expect(result.llmContent).toContain('Mock folder structure');
+    expect(result.llmContent).toContain('</AVAILABLE_RESOURCES>');
+    expect(result.llmContent).toContain('</ACTIVATED_SKILL>');
+    expect(result.returnDisplay).toContain('Skill **test-skill** activated');
+    expect(result.returnDisplay).toContain('Mock folder structure');
   });
 
-  it('returns an error when the skill is missing', async () => {
-    const config = getConfig() as unknown as Config;
-    config.getSkillManager().getSkills.mockReturnValue([]);
-    config.getSkillManager().getSkill.mockReturnValue(null);
-    const tool = new ActivateSkillTool(config);
-    const invocation = tool.build({ name: 'missing' });
+  it('should throw error if skill is not in enum', async () => {
+    const params = { name: 'non-existent' };
+    expect(() => tool.build(params as { name: string })).toThrow();
+  });
+
+  it('should return an error if skill content cannot be read', async () => {
+    vi.mocked(mockConfig.getSkillManager().getSkill).mockReturnValue(null);
+    const params = { name: 'test-skill' };
+    const invocation = tool.build(params);
     const result = await invocation.execute(new AbortController().signal);
 
-    expect(result.error?.type).toBe(ToolErrorType.INVALID_TOOL_PARAMS);
-    expect(String(result.returnDisplay)).toContain(
-      'Skill "missing" not found.',
-    );
+    expect(result.llmContent).toContain('Error: Skill "test-skill" not found.');
+    expect(mockConfig.getSkillManager().activateSkill).not.toHaveBeenCalled();
+  });
+
+  it('should validate that name is provided', () => {
+    expect(() =>
+      tool.build({ name: '' } as unknown as { name: string }),
+    ).toThrow();
   });
 });

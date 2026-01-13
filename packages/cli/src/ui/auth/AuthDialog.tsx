@@ -130,10 +130,16 @@ export function AuthDialog({
           }, 100);
           return;
         }
-      }
-      if (authType === AuthType.USE_GEMINI) {
-        setAuthState(AuthState.AwaitingApiKeyInput);
-        return;
+
+        if (authType === AuthType.USE_GEMINI) {
+          if (process.env['GEMINI_API_KEY'] !== undefined) {
+            setAuthState(AuthState.Unauthenticated);
+            return;
+          } else {
+            setAuthState(AuthState.AwaitingApiKeyInput);
+            return;
+          }
+        }
       }
       setAuthState(AuthState.Unauthenticated);
     },
@@ -145,6 +151,7 @@ export function AuthDialog({
     if (error) {
       onAuthError(error);
     } else {
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises
       onSelect(authMethod, SettingScope.User);
     }
   };
@@ -164,6 +171,7 @@ export function AuthDialog({
           );
           return;
         }
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         onSelect(undefined, SettingScope.User);
       }
     },

@@ -6,18 +6,17 @@
 
 import type { GenerateContentResponse } from '@google/genai';
 import { ApiError } from '@google/genai';
-import { AuthType } from '../core/contentGenerator.js';
 import {
-  classifyGoogleError,
-  RetryableQuotaError,
   TerminalQuotaError,
+  RetryableQuotaError,
+  classifyGoogleError,
 } from './googleQuotaErrors.js';
 import { delay, createAbortError } from './delay.js';
 import { debugLogger } from './debugLogger.js';
 import { getErrorStatus, ModelNotFoundError } from './httpErrors.js';
+import type { RetryAvailabilityContext } from '../availability/modelPolicy.js';
 
-const FETCH_FAILED_MESSAGE =
-  'exception TypeError: fetch failed sending request';
+export type { RetryAvailabilityContext };
 
 export interface RetryOptions {
   maxAttempts: number;
@@ -32,14 +31,49 @@ export interface RetryOptions {
   authType?: string;
   retryFetchErrors?: boolean;
   signal?: AbortSignal;
+  getAvailabilityContext?: () => RetryAvailabilityContext | undefined;
 }
 
 const DEFAULT_RETRY_OPTIONS: RetryOptions = {
   maxAttempts: 3,
   initialDelayMs: 5000,
   maxDelayMs: 30000, // 30 seconds
-  shouldRetryOnError: defaultShouldRetry,
+  shouldRetryOnError: isRetryableError,
 };
+
+const RETRYABLE_NETWORK_CODES = [
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+];
+
+function getNetworkErrorCode(error: unknown): string | undefined {
+  const getCode = (obj: unknown): string | undefined => {
+    if (typeof obj !== 'object' || obj === null) {
+      return undefined;
+    }
+    if ('code' in obj && typeof (obj as { code: unknown }).code === 'string') {
+      return (obj as { code: string }).code;
+    }
+    return undefined;
+  };
+
+  const directCode = getCode(error);
+  if (directCode) {
+    return directCode;
+  }
+
+  if (typeof error === 'object' && error !== null && 'cause' in error) {
+    return getCode((error as { cause: unknown }).cause);
+  }
+
+  return undefined;
+}
+
+const FETCH_FAILED_MESSAGE = 'fetch failed';
 
 /**
  * Default predicate function to determine if a retry should be attempted.
@@ -48,16 +82,21 @@ const DEFAULT_RETRY_OPTIONS: RetryOptions = {
  * @param retryFetchErrors Whether to retry on specific fetch errors.
  * @returns True if the error is a transient error, false otherwise.
  */
-function defaultShouldRetry(
+export function isRetryableError(
   error: Error | unknown,
   retryFetchErrors?: boolean,
 ): boolean {
-  if (
-    retryFetchErrors &&
-    error instanceof Error &&
-    error.message.includes(FETCH_FAILED_MESSAGE)
-  ) {
+  // Check for common network error codes
+  const errorCode = getNetworkErrorCode(error);
+  if (errorCode && RETRYABLE_NETWORK_CODES.includes(errorCode)) {
     return true;
+  }
+
+  if (retryFetchErrors && error instanceof Error) {
+    // Check for generic fetch failed message (case-insensitive)
+    if (error.message.toLowerCase().includes(FETCH_FAILED_MESSAGE)) {
+      return true;
+    }
   }
 
   // Priority check for ApiError
@@ -109,8 +148,10 @@ export async function retryWithBackoff<T>(
     shouldRetryOnContent,
     retryFetchErrors,
     signal,
+    getAvailabilityContext,
   } = {
     ...DEFAULT_RETRY_OPTIONS,
+    shouldRetryOnError: isRetryableError,
     ...cleanOptions,
   };
 
@@ -136,20 +177,28 @@ export async function retryWithBackoff<T>(
         continue;
       }
 
+      const successContext = getAvailabilityContext?.();
+      if (successContext) {
+        successContext.service.markHealthy(successContext.policy.model);
+      }
+
       return result;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         throw error;
       }
 
-
-
       const classifiedError = classifyGoogleError(error);
+
       const errorCode = getErrorStatus(error);
 
       // [PATCH:API_KEY_ROTATION] - Support API key rotation for quota errors
       if (errorCode === 429 || errorCode === 503) {
-        const rotation = await handleApiKeyRotation(authType, error, onPersistent429);
+        const rotation = await handleApiKeyRotation(
+          authType,
+          error,
+          onPersistent429,
+        );
         if (rotation.shouldContinue) {
           attempt = 0;
           currentDelay = initialDelayMs;
@@ -162,7 +211,7 @@ export async function retryWithBackoff<T>(
         classifiedError instanceof TerminalQuotaError ||
         classifiedError instanceof ModelNotFoundError
       ) {
-        if (onPersistent429 && authType === AuthType.LOGIN_WITH_GOOGLE) {
+        if (onPersistent429) {
           try {
             const fallbackModel = await onPersistent429(
               authType,
@@ -177,6 +226,7 @@ export async function retryWithBackoff<T>(
             debugLogger.warn('Fallback to Flash model failed:', fallbackError);
           }
         }
+        // Terminal/not_found already recorded; nothing else to mark here.
         throw classifiedError; // Throw if no fallback or fallback failed.
       }
 
@@ -185,7 +235,12 @@ export async function retryWithBackoff<T>(
 
       if (classifiedError instanceof RetryableQuotaError || is500) {
         if (attempt >= maxAttempts) {
-          if (onPersistent429 && authType === AuthType.LOGIN_WITH_GOOGLE) {
+          const errorMessage =
+            classifiedError instanceof Error ? classifiedError.message : '';
+          debugLogger.warn(
+            `Attempt ${attempt} failed${errorMessage ? `: ${errorMessage}` : ''}. Max attempts reached`,
+          );
+          if (onPersistent429) {
             try {
               const fallbackModel = await onPersistent429(
                 authType,
@@ -197,7 +252,7 @@ export async function retryWithBackoff<T>(
                 continue;
               }
             } catch (fallbackError) {
-              console.warn('Model fallback failed:', fallbackError);
+              debugLogger.warn('Model fallback failed:', fallbackError);
             }
           }
           throw classifiedError instanceof RetryableQuotaError
@@ -205,8 +260,11 @@ export async function retryWithBackoff<T>(
             : error;
         }
 
-        if (classifiedError instanceof RetryableQuotaError) {
-          console.warn(
+        if (
+          classifiedError instanceof RetryableQuotaError &&
+          classifiedError.retryDelayMs !== undefined
+        ) {
+          debugLogger.warn(
             `Attempt ${attempt} failed: ${classifiedError.message}. Retrying after ${classifiedError.retryDelayMs}ms...`,
           );
           await delay(classifiedError.retryDelayMs, signal);
@@ -265,7 +323,7 @@ function logRetryAttempt(
   if (errorStatus === 429) {
     debugLogger.warn(message, error);
   } else if (errorStatus && errorStatus >= 500 && errorStatus < 600) {
-    console.error(message, error);
+    debugLogger.warn(message, error);
   } else if (error instanceof Error) {
     // Fallback for errors that might not have a status but have a message
     if (error.message.includes('429')) {
@@ -274,7 +332,7 @@ function logRetryAttempt(
         error,
       );
     } else if (error.message.match(/5\d{2}/)) {
-      console.error(
+      debugLogger.warn(
         `Attempt ${attempt} failed with 5xx error. Retrying with backoff...`,
         error,
       );
@@ -295,16 +353,19 @@ function logRetryAttempt(
 async function handleApiKeyRotation(
   authType: string | undefined,
   error: unknown,
-  onPersistent429?: (authType?: string, error?: unknown) => Promise<string | boolean | null>
+  onPersistent429?: (
+    authType?: string,
+    error?: unknown,
+  ) => Promise<string | boolean | null>,
 ): Promise<{ shouldContinue: boolean; reason?: string }> {
   // Support GEMINI and OPENAI API key modes (not VERTEX_AI)
-  const isApiKeyMode = authType === AuthType.USE_GEMINI || 
-                       authType === AuthType.USE_OPENAI;
-  
+  const isApiKeyMode =
+    authType === AuthType.USE_GEMINI || authType === AuthType.USE_OPENAI;
+
   if (!isApiKeyMode || !onPersistent429) {
-    const reason = !isApiKeyMode ? 
-      `authType ${authType} not supported for rotation (only ${AuthType.USE_GEMINI}, ${AuthType.USE_OPENAI})` :
-      'no onPersistent429 callback provided';
+    const reason = !isApiKeyMode
+      ? `authType ${authType} not supported for rotation (only ${AuthType.USE_GEMINI}, ${AuthType.USE_OPENAI})`
+      : 'no onPersistent429 callback provided';
     return { shouldContinue: false, reason };
   }
 

@@ -9,21 +9,15 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import * as path from 'node:path';
 import { getFolderStructure } from '../utils/getFolderStructure.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
-import { MessageBusType } from '../confirmation-bus/types.js';
 import type {
   ToolResult,
   ToolCallConfirmationDetails,
   ToolInvocation,
-} from './tools.js';
-import {
-  BaseDeclarativeTool,
-  BaseToolInvocation,
-  Kind,
   ToolConfirmationOutcome,
 } from './tools.js';
+import { BaseDeclarativeTool, BaseToolInvocation, Kind } from './tools.js';
 import type { Config } from '../config/config.js';
 import { ACTIVATE_SKILL_TOOL_NAME } from './tool-names.js';
-import { ToolErrorType } from './tool-error.js';
 
 /**
  * Parameters for the ActivateSkill tool
@@ -44,7 +38,7 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
   constructor(
     private config: Config,
     params: ActivateSkillToolParams,
-    messageBus?: MessageBus,
+    messageBus: MessageBus,
     _toolName?: string,
     _toolDisplayName?: string,
   ) {
@@ -57,7 +51,7 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
     if (skill) {
       return `"${skillName}": ${skill.description}`;
     }
-    return `"${skillName}" (?) unknown skill`;
+    return `"${skillName}" (⚠️ unknown skill)`;
   }
 
   private async getOrFetchFolderStructure(
@@ -85,10 +79,6 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
       return false;
     }
 
-    if (skill.isBuiltin) {
-      return false;
-    }
-
     const folderStructure = await this.getOrFetchFolderStructure(
       skill.location,
     );
@@ -104,16 +94,7 @@ ${skill.description}
 **Resources to be shared with the model:**
 ${folderStructure}`,
       onConfirm: async (outcome: ToolConfirmationOutcome) => {
-        if (
-          outcome === ToolConfirmationOutcome.ProceedAlways &&
-          this.messageBus &&
-          this._toolName
-        ) {
-          this.messageBus.publish({
-            type: MessageBusType.UPDATE_POLICY,
-            toolName: this._toolName,
-          });
-        }
+        await this.publishPolicyUpdate(outcome);
       },
     };
     return confirmationDetails;
@@ -126,15 +107,9 @@ ${folderStructure}`,
 
     if (!skill) {
       const skills = skillManager.getSkills();
-      const availableSkills = skills.map((s) => s.name).join(', ');
-      const errorMessage = `Skill "${skillName}" not found. Available skills are: ${availableSkills}`;
       return {
-        llmContent: `Error: ${errorMessage}`,
-        returnDisplay: `Error: ${errorMessage}`,
-        error: {
-          message: errorMessage,
-          type: ToolErrorType.INVALID_TOOL_PARAMS,
-        },
+        llmContent: `Error: Skill "${skillName}" not found. Available skills are: ${skills.map((s) => s.name).join(', ')}`,
+        returnDisplay: `Skill "${skillName}" not found.`,
       };
     }
 
@@ -151,20 +126,16 @@ ${folderStructure}`,
     );
 
     return {
-      llmContent: `<activated_skill name="${skillName}">
-  <instructions>
+      llmContent: `<ACTIVATED_SKILL name="${skillName}">
+  <INSTRUCTIONS>
     ${skill.body}
-  </instructions>
+  </INSTRUCTIONS>
 
-  <available_resources>
+  <AVAILABLE_RESOURCES>
     ${folderStructure}
-  </available_resources>
-</activated_skill>`,
-      returnDisplay: `Skill **${skillName}** activated. Resources loaded from 
-${path.dirname(skill.location)}
-:
-
-${folderStructure}`,
+  </AVAILABLE_RESOURCES>
+</ACTIVATED_SKILL>`,
+      returnDisplay: `Skill **${skillName}** activated. Resources loaded from \`${path.dirname(skill.location)}\`:\n\n${folderStructure}`,
     };
   }
 }
@@ -180,7 +151,7 @@ export class ActivateSkillTool extends BaseDeclarativeTool<
 
   constructor(
     private config: Config,
-    messageBus?: MessageBus,
+    messageBus: MessageBus,
   ) {
     const skills = config.getSkillManager().getSkills();
     const skillNames = skills.map((s) => s.name);
@@ -198,20 +169,15 @@ export class ActivateSkillTool extends BaseDeclarativeTool<
       });
     }
 
-    const availableSkillsHint =
-      skillNames.length > 0
-        ? ` (Available: ${skillNames.map((n) => `'${n}'`).join(', ')})`
-        : '';
-
     super(
       ActivateSkillTool.Name,
       'Activate Skill',
-      `Activates a specialized agent skill by name${availableSkillsHint}. Returns the skill's instructions wrapped in \`<activated_skill>\` tags. These provide specialized guidance for the current task. Use this when you identify a task that matches a skill's description. ONLY use names exactly as they appear in the \`<available_skills>\` section.`,
+      "Activates a specialized agent skill by name. Returns the skill's instructions wrapped in `<ACTIVATED_SKILL>` tags. These provide specialized guidance for the current task. Use this when you identify a task that matches a skill's description.",
       Kind.Other,
       zodToJsonSchema(schema),
+      messageBus,
       true,
       false,
-      messageBus,
     );
   }
 
