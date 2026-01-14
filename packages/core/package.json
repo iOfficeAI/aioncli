@@ -1,5 +1,5 @@
 {
-  "name": "@google/gemini-cli-core",
+  "name": "@office-ai/aioncli-core",
   "version": "0.24.0-preview.1",
   "description": "Gemini CLI Core",
   "license": "Apache-2.0",
