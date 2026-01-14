@@ -1,7 +1,8 @@
 {
-  "name": "@office-ai/aioncli-core",
-  "version": "0.18.7",
+  "name": "@google/gemini-cli-core",
+  "version": "0.24.0-preview.1",
   "description": "Gemini CLI Core",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/office-sec/aioncli.git"
@@ -23,6 +24,7 @@
     "dist"
   ],
   "dependencies": {
+    "@a2a-js/sdk": "^0.3.7",
     "@google-cloud/logging": "^11.2.1",
     "@google-cloud/opentelemetry-cloud-monitoring-exporter": "^0.21.0",
     "@google-cloud/opentelemetry-cloud-trace-exporter": "^3.0.0",
@@ -47,9 +49,7 @@
     "ajv-formats": "^3.0.0",
     "chardet": "^2.1.0",
     "diff": "^7.0.0",
-    "dotenv": "^17.1.0",
     "fast-levenshtein": "^2.0.6",
-    "fast-uri": "^3.0.6",
     "fdir": "^6.4.6",
     "fzf": "^0.5.2",
     "glob": "^12.0.0",
@@ -58,6 +58,7 @@
     "https-proxy-agent": "^7.0.6",
     "ignore": "^7.0.0",
     "jsonrepair": "^3.13.0",
+    "js-yaml": "^4.1.1",
     "marked": "^15.0.12",
     "mime": "4.0.7",
     "mnemonist": "^0.40.3",
@@ -72,9 +73,10 @@
     "tiktoken": "^1.0.22",
     "tree-sitter-bash": "^0.25.0",
     "undici": "^7.10.0",
+    "uuid": "^13.0.0",
     "web-tree-sitter": "^0.25.10",
-    "ws": "^8.18.0",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.1"
   },
   "optionalDependencies": {
     "@lydell/node-pty": "1.1.0",
@@ -88,12 +90,11 @@
   "devDependencies": {
     "@google/gemini-cli-test-utils": "file:../test-utils",
     "@types/diff": "^7.0.2",
-    "@types/dotenv": "^6.1.1",
     "@types/fast-levenshtein": "^0.0.4",
+    "@types/js-yaml": "^4.0.9",
     "@types/minimatch": "^5.1.2",
     "@types/node-fetch": "^2.6.13",
     "@types/picomatch": "^4.0.1",
-    "@types/ws": "^8.5.10",
     "msw": "^2.3.4",
     "typescript": "^5.3.3",
     "vitest": "^3.1.1"

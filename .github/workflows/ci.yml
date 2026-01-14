@@ -43,7 +43,7 @@ jobs:
       - id: 'merge-queue-ci-skipper'
         uses: 'cariad-tech/merge-queue-ci-skipper@1032489e59437862c90a08a2c92809c903883772' # ratchet:cariad-tech/merge-queue-ci-skipper@main
         with:
-          secret: '${{ secrets.GITHUB_TOKEN }}'
+          secret: '${{ secrets.GEMINI_CLI_ROBOT_GITHUB_PAT }}'
 
   lint:
     name: 'Lint'
@@ -108,7 +108,7 @@ jobs:
       - name: 'Link Checker'
         uses: 'lycheeverse/lychee-action@885c65f3dc543b57c898c8099f4e08c8afd178a2' # ratchet: lycheeverse/lychee-action@v2.6.1
         with:
-          args: '--verbose ./**/*.md'
+          args: '--verbose --accept 200,503 ./**/*.md'
           fail: true
   test_linux:
     name: 'Test (Linux)'

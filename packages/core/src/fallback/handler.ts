@@ -6,22 +6,23 @@
 
 import type { Config } from '../config/config.js';
 import { AuthType } from '../core/contentGenerator.js';
-import {
-  DEFAULT_GEMINI_FLASH_MODEL,
-  DEFAULT_GEMINI_MODEL,
-  PREVIEW_GEMINI_MODEL,
-} from '../config/models.js';
-import { logFlashFallback, FlashFallbackEvent } from '../telemetry/index.js';
-import { coreEvents } from '../utils/events.js';
 import { openBrowserSecurely } from '../utils/secure-browser-launcher.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import { getErrorMessage } from '../utils/errors.js';
-import { ModelNotFoundError } from '../utils/httpErrors.js';
-import { TerminalQuotaError } from '../utils/googleQuotaErrors.js';
+import type { FallbackIntent, FallbackRecommendation } from './types.js';
+import { classifyFailureKind } from '../availability/errorClassification.js';
+import {
+  buildFallbackPolicyContext,
+  resolvePolicyChain,
+  resolvePolicyAction,
+  applyAvailabilityTransition,
+} from '../availability/policyHelpers.js';
 
 const UPGRADE_URL_PAGE = 'https://goo.gle/set-up-gemini-code-assist';
 
 // [PATCH:API_KEY_ROTATION_START]
+// First try to rotate API key for GEMINI/OPENAI API key modes
+// 优先尝试轮换 GEMINI/OPENAI API key
 /**
  * Tries to rotate API key for GEMINI/OPENAI API key authentication modes.
  * Returns true if key was rotated successfully, false otherwise.
@@ -79,127 +80,119 @@ export async function handleFallback(
 ): Promise<string | boolean | null> {
   // [PATCH:API_KEY_ROTATION_START]
   // First try to rotate API key for GEMINI/OPENAI API key modes
+  // 优先尝试轮换 GEMINI/OPENAI API key
   if (authType === AuthType.USE_GEMINI || authType === AuthType.USE_OPENAI) {
-    // First, give external handler a chance to rotate the key
-    const fallbackModelHandler = config.fallbackModelHandler;
-    if (typeof fallbackModelHandler === 'function') {
-      try {
-        const intent = await fallbackModelHandler(
-          failedModel,
-          failedModel,
-          error,
-        );
-
-        // After external handler runs, check if key was rotated
-        const rotatedAfterHandler = await tryRotateApiKey(config, authType);
-
-        if (rotatedAfterHandler) {
-          return true;
-        }
-
-        // If key wasn't rotated, respect the intent from external handler
-        if (intent === 'retry_always' || intent === 'retry_once') {
-          return true;
-        }
-        if (intent === 'stop') {
-          return false;
-        }
-      } catch (handlerError) {
-        console.error(
-          '[handleFallback] External handler failed:',
-          handlerError,
-        );
-      }
-    }
-
-    // If no external handler or it didn't rotate, try built-in rotation
     const rotated = await tryRotateApiKey(config, authType);
-
     if (rotated) {
       return true;
     }
-
-    // If all rotation attempts failed, stop retrying
     return null;
   }
   // [PATCH:API_KEY_ROTATION_END]
 
-  // OAuth fallback logic
-  if (authType !== AuthType.LOGIN_WITH_GOOGLE) return null;
-
-  // Guardrail: If it's a ModelNotFoundError but NOT the preview model, do not handle it.
-  if (
-    error instanceof ModelNotFoundError &&
-    failedModel !== PREVIEW_GEMINI_MODEL
-  ) {
+  if (authType !== AuthType.LOGIN_WITH_GOOGLE) {
     return null;
   }
-  const shouldActivatePreviewFallback =
-    failedModel === PREVIEW_GEMINI_MODEL &&
-    !(error instanceof TerminalQuotaError);
-  // Preview Model Specific Logic
-  if (shouldActivatePreviewFallback) {
-    // Always set bypass mode for the immediate retry, for non-TerminalQuotaErrors.
-    // This ensures the next attempt uses 2.5 Pro.
-    config.setPreviewModelBypassMode(true);
 
-    // If we are already in Preview Model fallback mode (user previously said "Always"),
-    // we silently retry (which will use 2.5 Pro due to bypass mode).
-    if (config.isPreviewModelFallbackMode()) {
-      return true;
+  // Resolve fallback policy chain and candidates.
+  // 解析回退策略链与候选模型。
+  const chain = resolvePolicyChain(config);
+  const { failedPolicy, candidates } = buildFallbackPolicyContext(
+    chain,
+    failedModel,
+  );
+
+  // Classify failure kind for availability policy decisions.
+  // 识别失败类型，用于可用性/策略决策。
+  const failureKind = classifyFailureKind(error);
+  const availability = config.getModelAvailabilityService();
+  // Build availability context for transitions.
+  // 构建可用性上下文以应用状态迁移。
+  const getAvailabilityContext = () => {
+    if (!failedPolicy) return undefined;
+    return { service: availability, policy: failedPolicy };
+  };
+
+  // Pick a fallback model based on availability policies.
+  // 基于可用性策略选择回退模型。
+  let fallbackModel: string;
+  if (!candidates.length) {
+    fallbackModel = failedModel;
+  } else {
+    // Select the first available model from candidates.
+    // 从候选模型中选择第一个可用模型。
+    const selection = availability.selectFirstAvailable(
+      candidates.map((policy) => policy.model),
+    );
+
+    const lastResortPolicy = candidates.find((policy) => policy.isLastResort);
+    const selectedFallbackModel =
+      selection.selectedModel ?? lastResortPolicy?.model;
+    const selectedPolicy = candidates.find(
+      (policy) => policy.model === selectedFallbackModel,
+    );
+
+    // Abort if the selected model is invalid or unchanged.
+    // 若选择无效或未发生变更则终止回退。
+    if (
+      !selectedFallbackModel ||
+      selectedFallbackModel === failedModel ||
+      !selectedPolicy
+    ) {
+      return null;
     }
+
+    fallbackModel = selectedFallbackModel;
+
+    // Resolve policy action for this failure.
+    // 针对该失败类型解析策略动作。
+    const action = resolvePolicyAction(failureKind, selectedPolicy);
+
+    // Silent action: apply transition and retry without UI.
+    // 静默动作：应用状态迁移并直接重试（不弹 UI）。
+    if (action === 'silent') {
+      applyAvailabilityTransition(getAvailabilityContext, failureKind);
+      return processIntent(config, 'retry_always', fallbackModel);
+    }
+
+    // This will be used in the future when FallbackRecommendation is passed through UI
+    // 将来 UI 透传 FallbackRecommendation 时使用
+    const recommendation: FallbackRecommendation = {
+      ...selection,
+      selectedModel: fallbackModel,
+      action,
+      failureKind,
+      failedPolicy,
+      selectedPolicy,
+    };
+    void recommendation;
   }
 
-  const fallbackModel = shouldActivatePreviewFallback
-    ? DEFAULT_GEMINI_MODEL
-    : DEFAULT_GEMINI_FLASH_MODEL;
-
-  // Consult UI Handler for Intent
-  const fallbackModelHandler = config.fallbackModelHandler;
-  if (typeof fallbackModelHandler !== 'function') return null;
+  // Ask UI layer for user intent.
+  // 通过 UI 获取用户意图。
+  const handler = config.getFallbackModelHandler();
+  if (typeof handler !== 'function') {
+    return null;
+  }
 
   try {
     // Pass the specific failed model to the UI handler.
-    const intent = await fallbackModelHandler(
-      failedModel,
-      fallbackModel,
-      error,
-    );
+    // 传入失败模型，供 UI 决策。
+    const intent = await handler(failedModel, fallbackModel, error);
 
-    // Process Intent and Update State
-    switch (intent) {
-      case 'retry_always':
-        // If the error is non-retryable, e.g. TerminalQuota Error, trigger a regular fallback to flash.
-        // For all other errors, activate previewModel fallback.
-        if (shouldActivatePreviewFallback) {
-          activatePreviewModelFallbackMode(config);
-        } else {
-          activateFallbackMode(config, authType);
-        }
-        return true; // Signal retryWithBackoff to continue.
-
-      case 'retry_once':
-        // Just retry this time, do NOT set sticky fallback mode.
-        return true;
-
-      case 'stop':
-        activateFallbackMode(config, authType);
-        return false;
-
-      case 'retry_later':
-        return false;
-
-      case 'upgrade':
-        await handleUpgrade();
-        return false;
-
-      default:
-        throw new Error(
-          `Unexpected fallback intent received from fallbackModelHandler: "${intent}"`,
-        );
+    // If the user chose to switch/retry, we apply the availability transition
+    // 如果用户选择切换/重试，则应用可用性状态迁移
+    // to the failed model (e.g. marking it terminal if it had a quota error).
+    // We DO NOT apply it if the user chose 'stop' or 'retry_later', allowing
+    // 若选择 stop/retry_later 则不应用迁移，允许后续再尝试
+    // them to try again later with the same model state.
+    if (intent === 'retry_always' || intent === 'retry_once') {
+      applyAvailabilityTransition(getAvailabilityContext, failureKind);
     }
+
+    return await processIntent(config, intent, fallbackModel);
   } catch (handlerError) {
-    console.error('Fallback UI handler failed:', handlerError);
+    debugLogger.error('Fallback handler failed:', handlerError);
     return null;
   }
 }
@@ -215,19 +208,38 @@ async function handleUpgrade() {
   }
 }
 
-function activateFallbackMode(config: Config, authType: string | undefined) {
-  if (!config.isInFallbackMode()) {
-    config.setFallbackMode(true);
-    coreEvents.emitFallbackModeChanged(true);
-    if (authType) {
-      logFlashFallback(config, new FlashFallbackEvent(authType));
-    }
-  }
-}
+async function processIntent(
+  config: Config,
+  intent: FallbackIntent | null,
+  fallbackModel: string,
+): Promise<boolean> {
+  switch (intent) {
+    case 'retry_always':
+      // TODO(telemetry): Implement generic fallback event logging. Existing
+      // logFlashFallback is specific to a single Model.
+      config.setActiveModel(fallbackModel);
+      return true;
 
-function activatePreviewModelFallbackMode(config: Config) {
-  if (!config.isPreviewModelFallbackMode()) {
-    config.setPreviewModelFallbackMode(true);
-    // We might want a specific event for Preview Model fallback, but for now we just set the mode.
+    case 'retry_once':
+      // For distinct retry (retry_once), we do NOT set the active model permanently.
+      // The FallbackStrategy will handle routing to the available model for this turn
+      // based on the availability service state (which is updated before this).
+      return true;
+
+    case 'stop':
+      // Do not switch model on stop. User wants to stay on current model (and stop).
+      return false;
+
+    case 'retry_later':
+      return false;
+
+    case 'upgrade':
+      await handleUpgrade();
+      return false;
+
+    default:
+      throw new Error(
+        `Unexpected fallback intent received from fallbackModelHandler: "${intent}"`,
+      );
   }
 }
