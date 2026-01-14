@@ -33,12 +33,6 @@ import {
   registerTelemetryConfig,
 } from './utils/cleanup.js';
 import { getCliVersion } from './utils/version.js';
-import type {
-  Config,
-  ResumedSessionData,
-  OutputPayload,
-  ConsoleLogPayload,
-} from '@google/gemini-cli-core';
 import {
   type Config,
   type ResumedSessionData,

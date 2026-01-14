@@ -18,10 +18,13 @@ import {
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { ExtensionUpdateState } from '../../ui/state/extensions.js';
 import * as os from 'node:os';
-import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import * as https from 'node:https';
 import * as tar from 'tar';
 import * as extract from 'extract-zip';
+import * as archiver from 'archiver';
 import type { ExtensionManager } from '../extension-manager.js';
 import { fetchJson } from './github_fetch.js';
 import { EventEmitter } from 'node:events';
@@ -51,6 +54,7 @@ vi.mock('@google/gemini-cli-core', async (importOriginal) => {
 vi.mock('simple-git');
 vi.mock('node:os');
 vi.mock('node:fs');
+vi.mock('node:fs/promises');
 vi.mock('node:https');
 vi.mock('tar');
 vi.mock('extract-zip');
@@ -316,7 +320,7 @@ describe('github.ts', () => {
       vi.mocked(os.platform).mockReturnValue('linux');
       vi.mocked(os.arch).mockReturnValue('x64');
 
-      // Mock https.get and fs.createWriteStream for downloadFile
+      // Mock https.get and fsSync.createWriteStream for downloadFile
       const mockReq = new EventEmitter();
       const mockRes =
         new EventEmitter() as unknown as import('node:http').IncomingMessage;
@@ -330,14 +334,14 @@ describe('github.ts', () => {
         return mockReq as unknown as import('node:http').ClientRequest;
       });
 
-      const mockStream = new EventEmitter() as unknown as fs.WriteStream;
+      const mockStream = new EventEmitter() as unknown as fsSync.WriteStream;
       Object.assign(mockStream, { close: vi.fn((cb) => cb && cb()) });
-      vi.mocked(fs.createWriteStream).mockReturnValue(mockStream);
+      vi.mocked(fsSync.createWriteStream).mockReturnValue(mockStream);
 
-      // Mock fs.promises.readdir to return empty array (no cleanup needed)
-      vi.mocked(fs.promises.readdir).mockResolvedValue([]);
-      // Mock fs.promises.unlink
-      vi.mocked(fs.promises.unlink).mockResolvedValue(undefined);
+      // Mock fs.readdir to return empty array (no cleanup needed)
+      vi.mocked(fs.readdir).mockResolvedValue([]);
+      // Mock fs.unlink
+      vi.mocked(fs.unlink).mockResolvedValue(undefined);
 
       const promise = downloadFromGitHubRelease(
         {
@@ -351,7 +355,7 @@ describe('github.ts', () => {
 
       // Wait for downloadFile to be called and stream to be created
       await vi.waitUntil(
-        () => vi.mocked(fs.createWriteStream).mock.calls.length > 0,
+        () => vi.mocked(fsSync.createWriteStream).mock.calls.length > 0,
       );
 
       // Trigger stream events to complete download
@@ -378,7 +382,7 @@ describe('github.ts', () => {
         tarball_url: 'http://tarball.url',
       });
 
-      // Mock https.get and fs.createWriteStream for downloadFile
+      // Mock https.get and fsSync.createWriteStream for downloadFile
       const mockReq = new EventEmitter();
       const mockRes =
         new EventEmitter() as unknown as import('node:http').IncomingMessage;
@@ -392,14 +396,14 @@ describe('github.ts', () => {
         return mockReq as unknown as import('node:http').ClientRequest;
       });
 
-      const mockStream = new EventEmitter() as unknown as fs.WriteStream;
+      const mockStream = new EventEmitter() as unknown as fsSync.WriteStream;
       Object.assign(mockStream, { close: vi.fn((cb) => cb && cb()) });
-      vi.mocked(fs.createWriteStream).mockReturnValue(mockStream);
+      vi.mocked(fsSync.createWriteStream).mockReturnValue(mockStream);
 
-      // Mock fs.promises.readdir to return empty array
-      vi.mocked(fs.promises.readdir).mockResolvedValue([]);
-      // Mock fs.promises.unlink
-      vi.mocked(fs.promises.unlink).mockResolvedValue(undefined);
+      // Mock fs.readdir to return empty array
+      vi.mocked(fs.readdir).mockResolvedValue([]);
+      // Mock fs.unlink
+      vi.mocked(fs.unlink).mockResolvedValue(undefined);
 
       const promise = downloadFromGitHubRelease(
         {
@@ -413,7 +417,7 @@ describe('github.ts', () => {
 
       // Wait for downloadFile to be called and stream to be created
       await vi.waitUntil(
-        () => vi.mocked(fs.createWriteStream).mock.calls.length > 0,
+        () => vi.mocked(fsSync.createWriteStream).mock.calls.length > 0,
       );
 
       // Trigger stream events to complete download
@@ -467,9 +471,9 @@ describe('github.ts', () => {
         return mockReq as unknown as import('node:http').ClientRequest;
       });
 
-      const mockStream = new EventEmitter() as unknown as fs.WriteStream;
+      const mockStream = new EventEmitter() as unknown as fsSync.WriteStream;
       Object.assign(mockStream, { close: vi.fn((cb) => cb && cb()) });
-      vi.mocked(fs.createWriteStream).mockReturnValue(mockStream);
+      vi.mocked(fsSync.createWriteStream).mockReturnValue(mockStream);
 
       const promise = downloadFile('url', '/dest');
       mockRes.emit('end');
@@ -522,9 +526,9 @@ describe('github.ts', () => {
           return mockReq as unknown as import('node:http').ClientRequest;
         });
 
-      const mockStream = new EventEmitter() as unknown as fs.WriteStream;
+      const mockStream = new EventEmitter() as unknown as fsSync.WriteStream;
       Object.assign(mockStream, { close: vi.fn((cb) => cb && cb()) });
-      vi.mocked(fs.createWriteStream).mockReturnValue(mockStream);
+      vi.mocked(fsSync.createWriteStream).mockReturnValue(mockStream);
 
       const promise = downloadFile('url', '/dest');
       mockResSuccess.emit('end');
@@ -591,9 +595,9 @@ describe('github.ts', () => {
         return mockReq as unknown as import('node:http').ClientRequest;
       });
 
-      const mockStream = new EventEmitter() as unknown as fs.WriteStream;
+      const mockStream = new EventEmitter() as unknown as fsSync.WriteStream;
       Object.assign(mockStream, { close: vi.fn((cb) => cb && cb()) });
-      vi.mocked(fs.createWriteStream).mockReturnValue(mockStream);
+      vi.mocked(fsSync.createWriteStream).mockReturnValue(mockStream);
 
       const promise = downloadFile('url', '/dest', {
         headers: { 'X-Custom': 'value' },

@@ -848,6 +848,9 @@ export const useGeminiStream = (
               userMessageTimestamp,
             );
             break;
+          case ServerGeminiEventType.InlineData:
+            // Inline data is handled within core message construction.
+            break;
           case ServerGeminiEventType.ToolCallRequest:
             toolCallRequests.push(event.value);
             break;

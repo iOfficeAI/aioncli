@@ -65,6 +65,8 @@ import {
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from '../config/auth.js';
 import process from 'node:process';
+import type { SessionInfo } from '../utils/sessionUtils.js';
+import { RELAUNCH_EXIT_CODE } from '../utils/processUtils.js';
 import { useHistory } from './hooks/useHistoryManager.js';
 import { useMemoryMonitor } from './hooks/useMemoryMonitor.js';
 import { useThemeCommand } from './hooks/useThemeCommand.js';
