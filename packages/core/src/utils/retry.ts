@@ -15,6 +15,7 @@ import { delay, createAbortError } from './delay.js';
 import { debugLogger } from './debugLogger.js';
 import { getErrorStatus, ModelNotFoundError } from './httpErrors.js';
 import type { RetryAvailabilityContext } from '../availability/modelPolicy.js';
+import { AuthType } from '../core/contentGenerator.js';
 
 export type { RetryAvailabilityContext };
 

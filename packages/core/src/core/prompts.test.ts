@@ -75,9 +75,6 @@ describe('Core System Prompt (prompts.ts)', () => {
       getAgentRegistry: vi.fn().mockReturnValue({
         getDirectoryContext: vi.fn().mockReturnValue('Mock Agent Directory'),
       }),
-      getSkillManager: vi.fn().mockReturnValue({
-        getSkills: vi.fn().mockReturnValue([]),
-      }),
     } as unknown as Config;
   });
 
@@ -259,9 +256,6 @@ describe('Core System Prompt (prompts.ts)', () => {
         getPreviewFeatures: vi.fn().mockReturnValue(false),
         getAgentRegistry: vi.fn().mockReturnValue({
           getDirectoryContext: vi.fn().mockReturnValue('Mock Agent Directory'),
-        }),
-        getSkillManager: vi.fn().mockReturnValue({
-          getSkills: vi.fn().mockReturnValue([]),
         }),
       } as unknown as Config;
 

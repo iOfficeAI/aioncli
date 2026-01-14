@@ -29,7 +29,6 @@ import { EditTool } from '../tools/edit.js';
 import { ShellTool } from '../tools/shell.js';
 import { WriteFileTool } from '../tools/write-file.js';
 import { WebFetchTool } from '../tools/web-fetch.js';
-import { ActivateSkillTool } from '../tools/activate-skill.js';
 import { MemoryTool, setGeminiMdFilename } from '../tools/memoryTool.js';
 import { WebSearchTool } from '../tools/web-search.js';
 import { GeminiClient } from '../core/client.js';
@@ -1028,10 +1027,6 @@ export class Config {
 
   getPromptRegistry(): PromptRegistry {
     return this.promptRegistry;
-  }
-
-  getSkillManager(): SkillManager {
-    return this.skillManager;
   }
 
   getResourceRegistry(): ResourceRegistry {
