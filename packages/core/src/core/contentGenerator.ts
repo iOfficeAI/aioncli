@@ -54,6 +54,7 @@ export enum AuthType {
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
   USE_OPENAI = 'openai',
+  USE_BEDROCK = 'bedrock',
 }
 
 export type ContentGeneratorConfig = {
@@ -75,6 +76,14 @@ export type ContentGeneratorConfig = {
     max_tokens?: number;
   };
   proxy?: string | undefined;
+  // AWS Bedrock configuration
+  bedrock?: {
+    region?: string;
+    accessKeyId?: string;
+    secretAccessKey?: string;
+    sessionToken?: string;
+    profile?: string;
+  };
 };
 
 export async function createContentGeneratorConfig(
@@ -125,6 +134,18 @@ export async function createContentGeneratorConfig(
 
   if (authType === AuthType.USE_OPENAI && openAiApiKey) {
     contentGeneratorConfig.apiKey = openAiApiKey;
+  }
+
+  // Handle Bedrock authType
+  if (authType === AuthType.USE_BEDROCK) {
+    contentGeneratorConfig.bedrock = {
+      region: process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'],
+      accessKeyId: process.env['AWS_ACCESS_KEY_ID'],
+      secretAccessKey: process.env['AWS_SECRET_ACCESS_KEY'],
+      sessionToken: process.env['AWS_SESSION_TOKEN'],
+      profile: process.env['AWS_PROFILE'],
+    };
+    return contentGeneratorConfig;
   }
 
   return contentGeneratorConfig;
@@ -219,6 +240,20 @@ export async function createContentGenerator(
 
       return new OpenAIContentGenerator(
         config.apiKey,
+        config.model || gcConfig.getModel() || DEFAULT_GEMINI_MODEL,
+        gcConfig,
+      );
+    }
+
+    // Handle Bedrock authType
+    if (config.authType === AuthType.USE_BEDROCK) {
+      // Import BedrockContentGenerator dynamically to reduce bundle size
+      const { BedrockContentGenerator } = await import(
+        './bedrockContentGenerator.js'
+      );
+
+      return new BedrockContentGenerator(
+        config.bedrock || {},
         config.model || gcConfig.getModel() || DEFAULT_GEMINI_MODEL,
         gcConfig,
       );
