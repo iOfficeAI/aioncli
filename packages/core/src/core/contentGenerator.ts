@@ -54,6 +54,7 @@ export enum AuthType {
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
   USE_OPENAI = 'openai',
+  USE_ANTHROPIC = 'anthropic',
 }
 
 export type ContentGeneratorConfig = {
@@ -91,6 +92,7 @@ export async function createContentGeneratorConfig(
   const googleCloudLocation = process.env['GOOGLE_CLOUD_LOCATION'] || undefined;
 
   const openAiApiKey = process.env['OPENAI_API_KEY'] || undefined;
+  const anthropicApiKey = process.env['ANTHROPIC_API_KEY'] || undefined;
 
   const contentGeneratorConfig: ContentGeneratorConfig = {
     model: config.getModel() || DEFAULT_GEMINI_MODEL,
@@ -125,6 +127,10 @@ export async function createContentGeneratorConfig(
 
   if (authType === AuthType.USE_OPENAI && openAiApiKey) {
     contentGeneratorConfig.apiKey = openAiApiKey;
+  }
+
+  if (authType === AuthType.USE_ANTHROPIC && anthropicApiKey) {
+    contentGeneratorConfig.apiKey = anthropicApiKey;
   }
 
   return contentGeneratorConfig;
@@ -220,6 +226,24 @@ export async function createContentGenerator(
       return new OpenAIContentGenerator(
         config.apiKey,
         config.model || gcConfig.getModel() || DEFAULT_GEMINI_MODEL,
+        gcConfig,
+      );
+    }
+
+    // Handle Anthropic authType
+    if (config.authType === AuthType.USE_ANTHROPIC) {
+      if (!config.apiKey) {
+        throw new Error('Anthropic API key is required');
+      }
+
+      // Import AnthropicContentGenerator dynamically to avoid circular dependencies
+      const { AnthropicContentGenerator } = await import(
+        './anthropicContentGenerator.js'
+      );
+
+      return new AnthropicContentGenerator(
+        config.apiKey,
+        config.model || gcConfig.getModel() || 'claude-sonnet-4-20250514',
         gcConfig,
       );
     }
