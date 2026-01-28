@@ -17,6 +17,7 @@ import type {
   Tool,
   ToolListUnion,
   FunctionCall,
+  FunctionResponse,
 } from '@google/genai';
 import { GenerateContentResponse, FinishReason } from '@google/genai';
 import type { ContentGenerator } from './contentGenerator.js';
