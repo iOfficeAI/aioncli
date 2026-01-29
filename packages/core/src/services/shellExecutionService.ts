@@ -109,6 +109,12 @@ export type ShellOutputEvent =
       type: 'binary_progress';
       /** The total number of bytes received so far. */
       bytesReceived: number;
+    }
+  | {
+      /** Signals that the process is actively running and receiving output. */
+      type: 'process';
+      /** The total number of bytes received so far. */
+      bytesReceived: number;
     };
 
 interface ActivePty {
@@ -279,6 +285,8 @@ export class ShellExecutionService {
         let isStreamingRawContent = true;
         const MAX_SNIFF_SIZE = 4096;
         let sniffedBytes = 0;
+        let lastProcessEventTime = Date.now(); // Initialize to current time to avoid immediate first event
+        const PROCESS_EVENT_INTERVAL_MS = 1000; // Emit process event at most once per second
 
         const handleOutput = (data: Buffer, stream: 'stdout' | 'stderr') => {
           if (!stdoutDecoder || !stderrDecoder) {
@@ -300,6 +308,20 @@ export class ShellExecutionService {
 
             if (isBinary(sniffBuffer)) {
               isStreamingRawContent = false;
+            }
+          }
+
+          // Emit process event to indicate the process is actively running
+          // Only emit for non-binary content and at most once per PROCESS_EVENT_INTERVAL_MS
+          if (isStreamingRawContent) {
+            const now = Date.now();
+            if (now - lastProcessEventTime >= PROCESS_EVENT_INTERVAL_MS) {
+              const totalBytes = outputChunks.reduce(
+                (sum, chunk) => sum + chunk.length,
+                0,
+              );
+              onOutputEvent({ type: 'process', bytesReceived: totalBytes });
+              lastProcessEventTime = now;
             }
           }
 
