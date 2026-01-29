@@ -25,6 +25,7 @@ import { FakeContentGenerator } from './fakeContentGenerator.js';
 import { parseCustomHeaders } from '../utils/customHeaderUtils.js';
 import { RecordingContentGenerator } from './recordingContentGenerator.js';
 import { getVersion, resolveModel } from '../../index.js';
+import { debugLogger } from '../utils/debugLogger.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -54,6 +55,7 @@ export enum AuthType {
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
   USE_OPENAI = 'openai',
+  USE_BEDROCK = 'bedrock',
 }
 
 export type ContentGeneratorConfig = {
@@ -75,6 +77,8 @@ export type ContentGeneratorConfig = {
     max_tokens?: number;
   };
   proxy?: string | undefined;
+  // AWS Bedrock configuration
+  awsRegion?: string;
 };
 
 export async function createContentGeneratorConfig(
@@ -125,6 +129,12 @@ export async function createContentGeneratorConfig(
 
   if (authType === AuthType.USE_OPENAI && openAiApiKey) {
     contentGeneratorConfig.apiKey = openAiApiKey;
+  }
+
+  if (authType === AuthType.USE_BEDROCK) {
+    // AWS credentials are handled by AWS SDK automatically
+    // Use the specified region from AWS_REGION environment variable
+    contentGeneratorConfig.awsRegion = process.env['AWS_REGION'] || 'us-east-1';
   }
 
   return contentGeneratorConfig;
@@ -220,6 +230,39 @@ export async function createContentGenerator(
       return new OpenAIContentGenerator(
         config.apiKey,
         config.model || gcConfig.getModel() || DEFAULT_GEMINI_MODEL,
+        gcConfig,
+      );
+    }
+
+    // Handle Bedrock authType
+    if (config.authType === AuthType.USE_BEDROCK) {
+      const { BedrockContentGenerator } = await import(
+        './bedrockContentGenerator.js'
+      );
+      const { DEFAULT_BEDROCK_MODEL, validateBedrockModelRegion } =
+        await import('../config/models.js');
+
+      const model =
+        config.model || gcConfig.getModel() || DEFAULT_BEDROCK_MODEL;
+      const region =
+        config.awsRegion || process.env['AWS_REGION'] || 'us-east-1';
+
+      // Validate model availability in region
+      const validation = validateBedrockModelRegion(model, region);
+      if (!validation.valid) {
+        throw new Error(validation.message);
+      }
+
+      if (validation.message) {
+        // Warning for unknown model
+        debugLogger.warn(validation.message);
+      }
+
+      return new LoggingContentGenerator(
+        new BedrockContentGenerator({
+          model,
+          region,
+        }),
         gcConfig,
       );
     }

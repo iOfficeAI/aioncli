@@ -77,6 +77,32 @@ function getNetworkErrorCode(error: unknown): string | undefined {
 const FETCH_FAILED_MESSAGE = 'fetch failed';
 
 /**
+ * AWS Bedrock error names that should trigger a retry.
+ */
+const RETRYABLE_BEDROCK_ERRORS = [
+  'ThrottlingException',
+  'ServiceUnavailableException',
+  'InternalServerException',
+  'ModelTimeoutException',
+  'ModelErrorException',
+];
+
+/**
+ * Check if an error is an AWS Bedrock retryable error.
+ */
+function isBedrockRetryableError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+
+  // AWS SDK errors have a 'name' property
+  const errorName =
+    'name' in error && typeof error.name === 'string' ? error.name : '';
+
+  return RETRYABLE_BEDROCK_ERRORS.includes(errorName);
+}
+
+/**
  * Default predicate function to determine if a retry should be attempted.
  * Retries on 429 (Too Many Requests) and 5xx server errors.
  * @param error The error object.
@@ -87,6 +113,11 @@ export function isRetryableError(
   error: Error | unknown,
   retryFetchErrors?: boolean,
 ): boolean {
+  // Check for AWS Bedrock errors first
+  if (isBedrockRetryableError(error)) {
+    return true;
+  }
+
   // Check for common network error codes
   const errorCode = getNetworkErrorCode(error);
   if (errorCode && RETRYABLE_NETWORK_CODES.includes(errorCode)) {
