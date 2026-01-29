@@ -1,6 +1,6 @@
 {
   "name": "@office-ai/aioncli-core",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "description": "Gemini CLI Core",
   "license": "Apache-2.0",
   "repository": {
