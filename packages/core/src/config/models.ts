@@ -156,3 +156,157 @@ export function isGemini2Model(model: string): boolean {
 export function supportsMultimodalFunctionResponse(model: string): boolean {
   return model.startsWith('gemini-3-');
 }
+
+// ===== AWS Bedrock Models =====
+
+/**
+ * Default Bedrock model - Claude Sonnet 4.5
+ */
+export const DEFAULT_BEDROCK_MODEL =
+  'anthropic.claude-sonnet-4-5-20250929-v1:0';
+
+/**
+ * Bedrock model availability by region.
+ * Based on AWS Bedrock documentation (as of January 2025).
+ * This mapping needs periodic updates as AWS expands model availability.
+ */
+export const BEDROCK_MODEL_REGIONS: Record<string, string[]> = {
+  // Claude 4.5 models
+  'anthropic.claude-opus-4-5-20251101-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+  'anthropic.claude-sonnet-4-5-20250929-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+  'anthropic.claude-haiku-4-5-20251001-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+
+  // Claude 4 models
+  'anthropic.claude-sonnet-4-20250514-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+
+  // Claude 3.7 models
+  'anthropic.claude-3-7-sonnet-20250219-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+
+  // Claude 3.5 models
+  'anthropic.claude-3-5-sonnet-20241022-v2:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+  'anthropic.claude-3-5-sonnet-20240620-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+
+  // Claude 3 models
+  'anthropic.claude-3-opus-20240229-v1:0': ['us-east-1', 'us-west-2'],
+  'anthropic.claude-3-sonnet-20240229-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+  'anthropic.claude-3-sonnet-20240229-v1:0:28k': [
+    'us-east-1',
+    'us-west-2',
+    'ap-southeast-1',
+  ],
+  'anthropic.claude-3-sonnet-20240229-v1:0:200k': [
+    'us-east-1',
+    'us-west-2',
+    'ap-southeast-1',
+  ],
+  'anthropic.claude-3-haiku-20240307-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+};
+
+/**
+ * Validate if a Bedrock model is available in the specified region.
+ *
+ * @param model Bedrock model ID
+ * @param region AWS region
+ * @returns Validation result with suggestions if not available
+ */
+export function validateBedrockModelRegion(
+  model: string,
+  region: string,
+): { valid: boolean; message?: string; suggestions?: string[] } {
+  const modelRegions = BEDROCK_MODEL_REGIONS[model];
+
+  if (!modelRegions) {
+    // Unknown model - allow but warn
+    return {
+      valid: true,
+      message:
+        `Warning: Model ${model} not in known model list. ` +
+        `It may work if it's a newly released model.`,
+    };
+  }
+
+  if (!modelRegions.includes(region)) {
+    // Model not available in this region
+    return {
+      valid: false,
+      message:
+        `Model ${model} is not available in region ${region}.\n\n` +
+        `Available regions for this model:\n` +
+        modelRegions.map((r) => `  - ${r}`).join('\n') +
+        `\n\nSolutions:\n` +
+        `  1. Switch to a supported region:\n` +
+        `     export AWS_REGION="${modelRegions[0]}"\n\n` +
+        `  2. List models available in ${region}:\n` +
+        `     aws bedrock list-foundation-models --region ${region} --by-provider Anthropic`,
+      suggestions: modelRegions,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Check if a model is a Bedrock model.
+ */
+export function isBedrockModel(model: string): boolean {
+  return (
+    model.startsWith('anthropic.') ||
+    model.startsWith('amazon.') ||
+    model.startsWith('meta.') ||
+    model.startsWith('mistral.')
+  );
+}

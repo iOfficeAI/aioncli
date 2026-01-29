@@ -27,6 +27,22 @@ function getAuthTypeFromEnv(): AuthType | undefined {
   if (process.env['GEMINI_API_KEY']) {
     return AuthType.USE_GEMINI;
   }
+  // Check for AWS Bedrock credentials
+  // AWS SDK will automatically detect credentials from multiple sources:
+  // 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+  // 2. AWS Profile (AWS_PROFILE)
+  // 3. IAM role (for EC2/ECS/Lambda)
+  if (
+    process.env['AWS_ACCESS_KEY_ID'] ||
+    process.env['AWS_PROFILE'] ||
+    process.env['AWS_REGION']
+  ) {
+    return AuthType.USE_BEDROCK;
+  }
+  // Check for OpenAI API key
+  if (process.env['OPENAI_API_KEY']) {
+    return AuthType.USE_OPENAI;
+  }
   return undefined;
 }
 
@@ -48,7 +64,12 @@ export async function validateNonInteractiveAuth(
     }
 
     if (!effectiveAuthType) {
-      const message = `Please set an Auth method in your ${USER_SETTINGS_PATH} or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA`;
+      const message = `Please set an Auth method in your ${USER_SETTINGS_PATH} or specify one of the following environment variables before running:
+  - GEMINI_API_KEY (for Gemini API)
+  - GOOGLE_GENAI_USE_VERTEXAI=true (for Vertex AI)
+  - GOOGLE_GENAI_USE_GCA=true (for Google Cloud)
+  - AWS_PROFILE or AWS_ACCESS_KEY_ID (for AWS Bedrock)
+  - OPENAI_API_KEY (for OpenAI compatible APIs)`;
       throw new Error(message);
     }
 

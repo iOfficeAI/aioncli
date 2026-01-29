@@ -31,6 +31,10 @@ export function validateAuthMethodWithSettings(
   if (authType === AuthType.USE_GEMINI) {
     return null;
   }
+  // AWS Bedrock and OpenAI use environment-based auth, validate in validateAuthMethod
+  if (authType === AuthType.USE_BEDROCK || authType === AuthType.USE_OPENAI) {
+    return validateAuthMethod(authType);
+  }
   return validateAuthMethod(authType);
 }
 

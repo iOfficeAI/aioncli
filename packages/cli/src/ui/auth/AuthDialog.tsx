@@ -74,6 +74,16 @@ export function AuthDialog({
       value: AuthType.USE_VERTEX_AI,
       key: AuthType.USE_VERTEX_AI,
     },
+    {
+      label: 'AWS Bedrock (Claude models)',
+      value: AuthType.USE_BEDROCK,
+      key: AuthType.USE_BEDROCK,
+    },
+    {
+      label: 'OpenAI Compatible APIs',
+      value: AuthType.USE_OPENAI,
+      key: AuthType.USE_OPENAI,
+    },
   ];
 
   if (settings.merged.security?.auth?.enforcedType) {
@@ -98,6 +108,20 @@ export function AuthDialog({
 
     if (defaultAuthType) {
       return item.value === defaultAuthType;
+    }
+
+    // Auto-detect AWS Bedrock credentials
+    if (
+      process.env['AWS_ACCESS_KEY_ID'] ||
+      process.env['AWS_PROFILE'] ||
+      process.env['AWS_REGION']
+    ) {
+      return item.value === AuthType.USE_BEDROCK;
+    }
+
+    // Auto-detect OpenAI API key
+    if (process.env['OPENAI_API_KEY']) {
+      return item.value === AuthType.USE_OPENAI;
     }
 
     if (process.env['GEMINI_API_KEY']) {
@@ -137,6 +161,24 @@ export function AuthDialog({
             return;
           } else {
             setAuthState(AuthState.AwaitingApiKeyInput);
+            return;
+          }
+        }
+
+        // AWS Bedrock uses credentials from environment or AWS config
+        if (authType === AuthType.USE_BEDROCK) {
+          setAuthState(AuthState.Unauthenticated);
+          return;
+        }
+
+        // OpenAI uses API key from environment
+        if (authType === AuthType.USE_OPENAI) {
+          if (process.env['OPENAI_API_KEY'] !== undefined) {
+            setAuthState(AuthState.Unauthenticated);
+            return;
+          } else {
+            // Could show API key input, but for now just proceed
+            setAuthState(AuthState.Unauthenticated);
             return;
           }
         }

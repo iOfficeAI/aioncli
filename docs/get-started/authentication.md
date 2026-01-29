@@ -17,6 +17,7 @@ Select the authentication method that matches your situation in the table below:
 | Organization users with a company, school, or Google Workspace account | [Login with Google](#login-google)                               | [Yes](#set-gcp)                                             |
 | AI Studio user with a Gemini API key                                   | [Use Gemini API Key](#gemini-api)                                | No                                                          |
 | Google Cloud Vertex AI user                                            | [Vertex AI](#vertex-ai)                                          | [Yes](#set-gcp)                                             |
+| AWS Bedrock user with Anthropic Claude models                          | [AWS Bedrock](#aws-bedrock)                                      | No (AWS account required)                                   |
 | [Headless mode](#headless)                                             | [Use Gemini API Key](#gemini-api) or<br> [Vertex AI](#vertex-ai) | No (for Gemini API Key)<br> [Yes](#set-gcp) (for Vertex AI) |
 
 ### What is my Google account type?
@@ -214,6 +215,167 @@ pipelines, or if your organization restricts user-based ADC or API key creation.
     ```
 
 5.  Select **Vertex AI**.
+
+## Use AWS Bedrock <a id="aws-bedrock"></a>
+
+To use Gemini CLI with AWS Bedrock and Anthropic Claude models, choose from the
+following authentication options:
+
+- A. AWS Profile (recommended for local development)
+- B. AWS Environment Variables
+- C. IAM Role (for EC2/ECS/Lambda environments)
+
+### Prerequisites
+
+Before using AWS Bedrock authentication:
+
+1. **AWS Account**: You need an AWS account with access to Amazon Bedrock.
+
+2. **Model Access**: Request access to Anthropic Claude models in the AWS
+   Bedrock console:
+   - Navigate to [AWS Bedrock Console](https://console.aws.amazon.com/bedrock)
+   - Go to "Model access" in the left sidebar
+   - Request access to Claude models (Claude 3.5, Claude 4, etc.)
+
+3. **IAM Permissions**: Ensure your AWS credentials have the following
+   permissions:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "bedrock:InvokeModel",
+           "bedrock:InvokeModelWithResponseStream"
+         ],
+         "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.claude-*"
+       }
+     ]
+   }
+   ```
+
+### A. AWS Bedrock - AWS Profile (Recommended)
+
+This is the recommended method for local development and supports multiple AWS
+accounts.
+
+1. Configure your AWS credentials using AWS CLI:
+
+   ```bash
+   # Configure a new AWS profile
+   aws configure --profile enterprise-ai
+   # Enter your AWS Access Key ID, Secret Access Key, and default region
+   ```
+
+   Or manually edit `~/.aws/credentials`:
+
+   ```ini
+   [enterprise-ai]
+   aws_access_key_id = YOUR_ACCESS_KEY
+   aws_secret_access_key = YOUR_SECRET_KEY
+   ```
+
+   And `~/.aws/config`:
+
+   ```ini
+   [profile enterprise-ai]
+   region = ap-southeast-1
+   output = json
+   ```
+
+2. Set the AWS profile and region environment variables:
+
+   ```bash
+   export AWS_PROFILE="enterprise-ai"
+   export AWS_REGION="ap-southeast-1"
+   ```
+
+   To make this setting persistent, see
+   [Persisting Environment Variables](#persisting-vars).
+
+3. Start the CLI:
+
+   ```bash
+   gemini
+   ```
+
+   Gemini CLI will automatically detect AWS Bedrock credentials and use them.
+
+### B. AWS Bedrock - Environment Variables
+
+Use this method for CI/CD pipelines or temporary credentials.
+
+1. Set AWS credentials as environment variables:
+
+   ```bash
+   export AWS_ACCESS_KEY_ID="YOUR_ACCESS_KEY"
+   export AWS_SECRET_ACCESS_KEY="YOUR_SECRET_KEY"
+   export AWS_REGION="us-east-1"
+   ```
+
+   For temporary credentials (STS), also include:
+
+   ```bash
+   export AWS_SESSION_TOKEN="YOUR_SESSION_TOKEN"
+   ```
+
+2. Start the CLI:
+
+   ```bash
+   gemini
+   ```
+
+   > **Warning:** Treat AWS credentials as sensitive information. Never commit
+   > them to version control or share them publicly.
+
+### C. AWS Bedrock - IAM Role
+
+When running in AWS environments (EC2, ECS, Lambda, etc.), IAM roles provide
+automatic authentication without managing credentials.
+
+1. Attach an IAM role with Bedrock permissions to your compute resource.
+
+2. Set the AWS region:
+
+   ```bash
+   export AWS_REGION="us-east-1"
+   ```
+
+3. Start the CLI:
+
+   ```bash
+   gemini
+   ```
+
+   Gemini CLI will automatically use the IAM role credentials.
+
+### Selecting Claude Models
+
+By default, Gemini CLI uses `anthropic.claude-sonnet-4-5-20250929-v1:0`. To use
+a different model, set the model via configuration or command line.
+
+Available Claude models in Bedrock:
+
+- `anthropic.claude-opus-4-5-20251101-v1:0` (Claude Opus 4.5)
+- `anthropic.claude-sonnet-4-5-20250929-v1:0` (Claude Sonnet 4.5, default)
+- `anthropic.claude-haiku-4-5-20251001-v1:0` (Claude Haiku 4.5)
+- `anthropic.claude-3-5-sonnet-20241022-v2:0` (Claude 3.5 Sonnet)
+
+For regional availability and the complete list of models, see the
+[AWS Bedrock documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/models-regions.html).
+
+### Regional Model Availability
+
+Claude models are available in specific AWS regions. Ensure your `AWS_REGION`
+supports your chosen model:
+
+- **us-east-1, us-west-2**: All Claude models
+- **eu-west-1, eu-central-1**: Most Claude models
+- **ap-southeast-1, ap-northeast-1**: Selected Claude models
+
+If you encounter a model availability error, the CLI will display available
+regions for your model and suggest solutions.
 
 ## Set your Google Cloud project <a id="set-gcp"></a>
 
