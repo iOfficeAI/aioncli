@@ -227,6 +227,16 @@ export class ShellToolInvocation extends BaseToolInvocation<
                   shouldUpdate = true;
                 }
                 break;
+              case 'process':
+                // Process event indicates the command is actively running
+                // Only update periodically to avoid excessive UI updates
+                if (Date.now() - lastUpdateTime > OUTPUT_UPDATE_INTERVAL_MS) {
+                  cumulativeOutput = `[Processing... ${formatMemoryUsage(
+                    event.bytesReceived,
+                  )} received]`;
+                  shouldUpdate = true;
+                }
+                break;
               default: {
                 throw new Error('An unhandled ShellOutputEvent was found.');
               }
