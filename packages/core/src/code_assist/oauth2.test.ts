@@ -1184,7 +1184,8 @@ describe('oauth2', () => {
         const stdinOnSpy = vi
           .spyOn(process.stdin, 'on')
           .mockImplementation(
-            (event: string, listener: (data: Buffer) => void) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (event: any, listener: any) => {
               if (event === 'data') {
                 listener(Buffer.from([0x03]));
               }
