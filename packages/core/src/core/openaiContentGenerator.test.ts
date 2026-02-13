@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OpenAIContentGenerator } from './openaiContentGenerator.js';
-import { Config } from '../config/config.js';
+import type { Config } from '../config/config.js';
 import OpenAI from 'openai';
 import type {
   GenerateContentParameters,
@@ -1062,7 +1062,7 @@ describe('OpenAIContentGenerator', () => {
       await expect(async () => {
         for await (const chunk of stream) {
           // Stream will throw during iteration
-          console.log('Processing chunk:', chunk); // Use chunk to avoid warning
+          expect(chunk).toBeDefined();
         }
       }).rejects.toThrow('Stream error');
     });
@@ -2149,6 +2149,83 @@ describe('OpenAIContentGenerator', () => {
   });
 
   describe('sampling parameters edge cases', () => {
+    it('should force temperature to 1 for kimi-k2.5 models', async () => {
+      const testGenerator = new OpenAIContentGenerator(
+        'test-key',
+        'kimi-k2.5',
+        mockConfig,
+      );
+
+      const mockResponse = {
+        id: 'chatcmpl-123',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Response' },
+            finish_reason: 'stop',
+          },
+        ],
+        created: 1677652288,
+        model: 'kimi-k2.5',
+      };
+
+      mockOpenAIClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const request: GenerateContentParameters = {
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        model: 'kimi-k2.5',
+        config: {
+          temperature: 0.2,
+        },
+      };
+
+      await testGenerator.generateContent(request, 'test-prompt-id');
+
+      expect(mockOpenAIClient.chat.completions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          temperature: 1.0,
+        }),
+      );
+    });
+
+    it('should force temperature to 1 for gpt-5 models', async () => {
+      const testGenerator = new OpenAIContentGenerator(
+        'test-key',
+        'gpt-5',
+        mockConfig,
+      );
+
+      const mockResponse = {
+        id: 'chatcmpl-123',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Response' },
+            finish_reason: 'stop',
+          },
+        ],
+        created: 1677652288,
+        model: 'gpt-5',
+      };
+
+      mockOpenAIClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const request: GenerateContentParameters = {
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        model: 'gpt-5',
+        config: {
+          temperature: 0.2,
+        },
+      };
+
+      await testGenerator.generateContent(request, 'test-prompt-id');
+
+      expect(mockOpenAIClient.chat.completions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          temperature: 1.0,
+        }),
+      );
+    });
     it('should handle undefined sampling parameters gracefully', async () => {
       const configWithUndefined = {
         getContentGeneratorConfig: vi.fn().mockReturnValue({

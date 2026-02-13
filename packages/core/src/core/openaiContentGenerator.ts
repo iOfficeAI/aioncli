@@ -14,7 +14,6 @@ import type {
   Content,
   Tool,
   ToolListUnion,
-  CallableTool,
   FunctionCall,
   FunctionResponse,
 } from '@google/genai';
@@ -26,6 +25,7 @@ import { toContents } from '../code_assist/converter.js';
 import { ApiResponseEvent } from '../telemetry/types.js';
 import type { Config } from '../config/config.js';
 import { safeJsonParse } from '../utils/safeJsonParse.js';
+import { debugLogger } from '../utils/debugLogger.js';
 
 // OpenAI API type definitions for logging
 interface OpenAIToolCall {
@@ -391,7 +391,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Allow subclasses to suppress error logging for specific scenarios
       if (!this.shouldSuppressErrorLogging(error, request)) {
-        console.error('OpenAI API Error:', errorMessage);
+        debugLogger.error('OpenAI API Error:', errorMessage);
       }
 
       // Provide helpful timeout-specific error message
@@ -642,7 +642,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Allow subclasses to suppress error logging for specific scenarios
       if (!this.shouldSuppressErrorLogging(error, request)) {
-        console.error('OpenAI API Streaming Error:', errorMessage);
+        debugLogger.error('OpenAI API Streaming Error:', errorMessage);
       }
 
       // Provide helpful timeout-specific error message for streaming setup
@@ -753,7 +753,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       totalTokens = encoding.encode(content).length;
       encoding.free();
     } catch (error) {
-      console.warn(
+      debugLogger.warn(
         'Failed to load tiktoken, falling back to character approximation:',
         error,
       );
@@ -815,7 +815,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         ],
       };
     } catch (error) {
-      console.error('OpenAI API Embedding Error:', error);
+      debugLogger.error('OpenAI API Embedding Error:', error);
       throw new Error(
         `OpenAI API error: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -945,12 +945,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
     for (const tool of geminiTools) {
       let actualTool: Tool;
 
-      // Handle CallableTool vs Tool
-      if ('tool' in tool) {
-        // This is a CallableTool
-        actualTool = await (tool as CallableTool).tool();
+      // Handle CallableTool vs Tool (callable tools expose an async tool() factory)
+      if (
+        'tool' in tool &&
+        typeof (tool as { tool?: unknown }).tool === 'function'
+      ) {
+        actualTool = await (tool as { tool: () => Promise<Tool> }).tool();
       } else {
-        // This is already a Tool
         actualTool = tool as Tool;
       }
 
@@ -1012,7 +1013,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         typeof systemInstruction === 'object' &&
         'parts' in systemInstruction
       ) {
-        const systemContent = systemInstruction as Content;
+        const systemContent = systemInstruction;
         systemText =
           systemContent.parts
             ?.map((p: Part) =>
@@ -1916,13 +1917,18 @@ export class OpenAIContentGenerator implements ContentGenerator {
         : {}),
     };
 
-    // Force temperature to 1 for GPT-5 and GPT-4o models if temperature is present
+    // Force temperature to 1 for models/providers that only accept temperature=1.
+    // Some OpenAI-compatible gateways reject any temperature value other than 1 with
+    // `400 invalid temperature: only 1 is allowed for this model`.
     const modelName = this.model.toLowerCase();
     if (
       (modelName.includes('gpt-5') ||
         modelName.includes('gpt5') ||
         modelName.includes('gpt-4o') ||
-        modelName.includes('gpt4o')) &&
+        modelName.includes('gpt4o') ||
+        // Kimi K2.5 models (Moonshot) - some providers enforce temperature=1
+        modelName.includes('kimi-k2.5') ||
+        (modelName.includes('kimi') && modelName.includes('k2.5'))) &&
       params.temperature !== undefined
     ) {
       params.temperature = 1.0;
@@ -1979,7 +1985,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         typeof systemInstruction === 'object' &&
         'parts' in systemInstruction
       ) {
-        const systemContent = systemInstruction as Content;
+        const systemContent = systemInstruction;
         systemText =
           systemContent.parts
             ?.map((p: Part) =>
