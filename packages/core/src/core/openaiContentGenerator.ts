@@ -1921,17 +1921,23 @@ export class OpenAIContentGenerator implements ContentGenerator {
     // Some OpenAI-compatible gateways reject any temperature value other than 1 with
     // `400 invalid temperature: only 1 is allowed for this model`.
     const modelName = this.model.toLowerCase();
-    if (
-      (modelName.includes('gpt-5') ||
-        modelName.includes('gpt5') ||
-        modelName.includes('gpt-4o') ||
-        modelName.includes('gpt4o') ||
-        // Kimi K2.5 models (Moonshot) - some providers enforce temperature=1
-        modelName.includes('kimi-k2.5') ||
-        (modelName.includes('kimi') && modelName.includes('k2.5'))) &&
-      params.temperature !== undefined
-    ) {
+    const isKimiModel =
+      modelName.includes('kimi-k2.5') ||
+      (modelName.includes('kimi') && modelName.includes('k2.5'));
+    const isRestrictedModel =
+      modelName.includes('gpt-5') ||
+      modelName.includes('gpt5') ||
+      modelName.includes('gpt-4o') ||
+      modelName.includes('gpt4o') ||
+      isKimiModel;
+
+    if (isRestrictedModel) {
       params.temperature = 1.0;
+
+      // Kimi K2.5 models enforce top_p=0.95
+      if (isKimiModel) {
+        params.top_p = 0.95;
+      }
     }
 
     return params;
