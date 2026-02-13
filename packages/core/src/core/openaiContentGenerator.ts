@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/* eslint-disable no-console */
 import type {
   CountTokensResponse,
   GenerateContentParameters,
@@ -14,7 +15,6 @@ import type {
   Content,
   Tool,
   ToolListUnion,
-  CallableTool,
   FunctionCall,
   FunctionResponse,
 } from '@google/genai';
@@ -945,12 +945,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
     for (const tool of geminiTools) {
       let actualTool: Tool;
 
-      // Handle CallableTool vs Tool
-      if ('tool' in tool) {
-        // This is a CallableTool
-        actualTool = await (tool as CallableTool).tool();
+      // Handle CallableTool vs Tool (callable tools expose an async tool() factory)
+      if (
+        'tool' in tool &&
+        typeof (tool as { tool?: unknown }).tool === 'function'
+      ) {
+        actualTool = await (tool as { tool: () => Promise<Tool> }).tool();
       } else {
-        // This is already a Tool
         actualTool = tool as Tool;
       }
 
@@ -1012,7 +1013,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         typeof systemInstruction === 'object' &&
         'parts' in systemInstruction
       ) {
-        const systemContent = systemInstruction as Content;
+        const systemContent = systemInstruction;
         systemText =
           systemContent.parts
             ?.map((p: Part) =>
@@ -1916,16 +1917,27 @@ export class OpenAIContentGenerator implements ContentGenerator {
         : {}),
     };
 
-    // Force temperature to 1 for GPT-5 and GPT-4o models if temperature is present
+    // Force temperature to 1 for models/providers that only accept temperature=1.
+    // Some OpenAI-compatible gateways reject any temperature value other than 1 with
+    // `400 invalid temperature: only 1 is allowed for this model`.
     const modelName = this.model.toLowerCase();
-    if (
-      (modelName.includes('gpt-5') ||
-        modelName.includes('gpt5') ||
-        modelName.includes('gpt-4o') ||
-        modelName.includes('gpt4o')) &&
-      params.temperature !== undefined
-    ) {
+    const isKimiModel =
+      modelName.includes('kimi-k2.5') ||
+      (modelName.includes('kimi') && modelName.includes('k2.5'));
+    const isRestrictedModel =
+      modelName.includes('gpt-5') ||
+      modelName.includes('gpt5') ||
+      modelName.includes('gpt-4o') ||
+      modelName.includes('gpt4o') ||
+      isKimiModel;
+
+    if (isRestrictedModel) {
       params.temperature = 1.0;
+
+      // Kimi K2.5 models enforce top_p=0.95
+      if (isKimiModel) {
+        params.top_p = 0.95;
+      }
     }
 
     return params;
@@ -1979,7 +1991,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         typeof systemInstruction === 'object' &&
         'parts' in systemInstruction
       ) {
-        const systemContent = systemInstruction as Content;
+        const systemContent = systemInstruction;
         systemText =
           systemContent.parts
             ?.map((p: Part) =>
