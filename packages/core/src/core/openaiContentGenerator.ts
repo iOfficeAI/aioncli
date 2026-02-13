@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/* eslint-disable no-console */
 import type {
   CountTokensResponse,
   GenerateContentParameters,
@@ -25,7 +26,6 @@ import { toContents } from '../code_assist/converter.js';
 import { ApiResponseEvent } from '../telemetry/types.js';
 import type { Config } from '../config/config.js';
 import { safeJsonParse } from '../utils/safeJsonParse.js';
-import { debugLogger } from '../utils/debugLogger.js';
 
 // OpenAI API type definitions for logging
 interface OpenAIToolCall {
@@ -391,7 +391,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Allow subclasses to suppress error logging for specific scenarios
       if (!this.shouldSuppressErrorLogging(error, request)) {
-        debugLogger.error('OpenAI API Error:', errorMessage);
+        console.error('OpenAI API Error:', errorMessage);
       }
 
       // Provide helpful timeout-specific error message
@@ -642,7 +642,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Allow subclasses to suppress error logging for specific scenarios
       if (!this.shouldSuppressErrorLogging(error, request)) {
-        debugLogger.error('OpenAI API Streaming Error:', errorMessage);
+        console.error('OpenAI API Streaming Error:', errorMessage);
       }
 
       // Provide helpful timeout-specific error message for streaming setup
@@ -753,7 +753,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
       totalTokens = encoding.encode(content).length;
       encoding.free();
     } catch (error) {
-      debugLogger.warn(
+      console.warn(
         'Failed to load tiktoken, falling back to character approximation:',
         error,
       );
@@ -815,7 +815,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
         ],
       };
     } catch (error) {
-      debugLogger.error('OpenAI API Embedding Error:', error);
+      console.error('OpenAI API Embedding Error:', error);
       throw new Error(
         `OpenAI API error: ${error instanceof Error ? error.message : String(error)}`,
       );
