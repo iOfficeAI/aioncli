@@ -118,6 +118,7 @@ async function handleExecuteCommand(
       const eventHandler = (event: AgentExecutionEvent) => {
         const jsonRpcResponse = {
           jsonrpc: '2.0',
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
           id: 'taskId' in event ? event.taskId : (event as Message).messageId,
           result: event,
         };
@@ -206,6 +207,7 @@ export async function createApp() {
     expressApp.post('/tasks', async (req, res) => {
       try {
         const taskId = uuidv4();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         const agentSettings = req.body.agentSettings as
           | AgentSettings
           | undefined;
@@ -326,9 +328,9 @@ export async function createApp() {
 export async function main() {
   try {
     const expressApp = await createApp();
-    const port = process.env['CODER_AGENT_PORT'] || 0;
+    const port = Number(process.env['CODER_AGENT_PORT'] || 0);
 
-    const server = expressApp.listen(port, () => {
+    const server = expressApp.listen(port, 'localhost', () => {
       const address = server.address();
       let actualPort;
       if (process.env['CODER_AGENT_PORT']) {

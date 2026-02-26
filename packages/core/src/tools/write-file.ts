@@ -5,7 +5,9 @@
  */
 
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import * as Diff from 'diff';
 import { WRITE_FILE_TOOL_NAME } from './tool-names.js';
 import type { Config } from '../config/config.js';
@@ -32,6 +34,7 @@ import {
   ensureCorrectEdit,
   ensureCorrectFileContent,
 } from '../utils/editCorrector.js';
+import { detectLineEnding } from '../utils/textUtils.js';
 import { DEFAULT_DIFF_OPTIONS, getDiffStat } from './diffOptions.js';
 import type {
   ModifiableDeclarativeTool,
@@ -45,6 +48,8 @@ import { getSpecificMimeType } from '../utils/fileUtils.js';
 import { getLanguageFromFilePath } from '../utils/language-detection.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import { debugLogger } from '../utils/debugLogger.js';
+import { WRITE_FILE_DEFINITION } from './definitions/coreTools.js';
+import { resolveToolDeclaration } from './definitions/resolver.js';
 
 /**
  * Parameters for the WriteFile tool
@@ -69,11 +74,6 @@ export interface WriteFileToolParams {
    * Initially proposed content.
    */
   ai_proposed_content?: string;
-
-  /**
-   * Alias for file_path (for compatibility with some models)
-   */
-  path?: string;
 }
 
 interface GetCorrectedFileContentResult {
@@ -132,6 +132,7 @@ export async function getCorrectedFileContent(
       config.getGeminiClient(),
       config.getBaseLlmClient(),
       abortSignal,
+      config.getDisableLLMCorrection(),
     );
     correctedContent = correctedParams.new_string;
   } else {
@@ -140,6 +141,7 @@ export async function getCorrectedFileContent(
       proposedContent,
       config.getBaseLlmClient(),
       abortSignal,
+      config.getDisableLLMCorrection(),
     );
   }
   return { originalContent, correctedContent, fileExists };
@@ -248,6 +250,18 @@ class WriteFileToolInvocation extends BaseToolInvocation<
   }
 
   async execute(abortSignal: AbortSignal): Promise<ToolResult> {
+    const validationError = this.config.validatePathAccess(this.resolvedPath);
+    if (validationError) {
+      return {
+        llmContent: validationError,
+        returnDisplay: 'Error: Path not in workspace.',
+        error: {
+          message: validationError,
+          type: ToolErrorType.PATH_NOT_IN_WORKSPACE,
+        },
+      };
+    }
+
     const { content, ai_proposed_content, modified_by_user } = this.params;
     const correctedContentResult = await getCorrectedFileContent(
       this.config,
@@ -285,13 +299,25 @@ class WriteFileToolInvocation extends BaseToolInvocation<
 
     try {
       const dirName = path.dirname(this.resolvedPath);
-      if (!fs.existsSync(dirName)) {
-        fs.mkdirSync(dirName, { recursive: true });
+      try {
+        await fsPromises.access(dirName);
+      } catch {
+        await fsPromises.mkdir(dirName, { recursive: true });
+      }
+
+      let finalContent = fileContent;
+      const useCRLF =
+        !isNewFile && originalContent
+          ? detectLineEnding(originalContent) === '\r\n'
+          : os.EOL === '\r\n';
+
+      if (useCRLF) {
+        finalContent = finalContent.replace(/\r?\n/g, '\r\n');
       }
 
       await this.config
         .getFileSystemService()
-        .writeTextFile(this.resolvedPath, fileContent);
+        .writeTextFile(this.resolvedPath, finalContent);
 
       // Generate diff for display result
       const fileName = path.basename(this.resolvedPath);
@@ -351,9 +377,11 @@ class WriteFileToolInvocation extends BaseToolInvocation<
       const displayResult: FileDiff = {
         fileDiff,
         fileName,
+        filePath: this.resolvedPath,
         originalContent: correctedContentResult.originalContent,
         newContent: correctedContentResult.correctedContent,
         diffStat,
+        isNewFile,
       };
 
       return {
@@ -419,29 +447,9 @@ export class WriteFileTool
     super(
       WriteFileTool.Name,
       'WriteFile',
-      `Writes content to a specified file in the local filesystem.
-
-      The user has the ability to modify \`content\`. If modified, this will be stated in the response.`,
+      WRITE_FILE_DEFINITION.base.description!,
       Kind.Edit,
-      {
-        properties: {
-          file_path: {
-            description: 'The path to the file to write to.',
-            type: 'string',
-          },
-          path: {
-            description:
-              'Alias for file_path (for compatibility with some models).',
-            type: 'string',
-          },
-          content: {
-            description: 'The content to write to the file.',
-            type: 'string',
-          },
-        },
-        required: ['content'],
-        type: 'object',
-      },
+      WRITE_FILE_DEFINITION.base.parametersJsonSchema,
       messageBus,
       true,
       false,
@@ -451,25 +459,17 @@ export class WriteFileTool
   protected override validateToolParamValues(
     params: WriteFileToolParams,
   ): string | null {
-    // Normalize: support 'path' as alias for 'file_path'
-    if (!params.file_path && params.path) {
-      params.file_path = params.path;
-    }
-
     const filePath = params.file_path;
 
     if (!filePath) {
-      return `Missing or empty "file_path" (or "path")`;
+      return `Missing or empty "file_path"`;
     }
 
     const resolvedPath = path.resolve(this.config.getTargetDir(), filePath);
 
-    const workspaceContext = this.config.getWorkspaceContext();
-    if (!workspaceContext.isPathWithinWorkspace(resolvedPath)) {
-      const directories = workspaceContext.getDirectories();
-      return `File path must be within one of the workspace directories: ${directories.join(
-        ', ',
-      )}`;
+    const validationError = this.config.validatePathAccess(resolvedPath);
+    if (validationError) {
+      return validationError;
     }
 
     try {
@@ -499,6 +499,10 @@ export class WriteFileTool
       this.name,
       this.displayName,
     );
+  }
+
+  override getSchema(modelId?: string) {
+    return resolveToolDeclaration(WRITE_FILE_DEFINITION, modelId);
   }
 
   getModifyContext(

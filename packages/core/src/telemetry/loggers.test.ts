@@ -111,6 +111,14 @@ import { UserAccountManager } from '../utils/userAccountManager.js';
 import { InstallationManager } from '../utils/installationManager.js';
 import { AgentTerminateMode } from '../agents/types.js';
 
+vi.mock('systeminformation', () => ({
+  default: {
+    graphics: vi.fn().mockResolvedValue({
+      controllers: [{ model: 'Mock GPU' }],
+    }),
+  },
+}));
+
 describe('loggers', () => {
   const mockLogger = {
     emit: vi.fn(),
@@ -179,7 +187,7 @@ describe('loggers', () => {
   });
 
   describe('logCliConfiguration', () => {
-    it('should log the cli configuration', () => {
+    it('should log the cli configuration', async () => {
       const mockConfig = {
         getSessionId: () => 'test-session-id',
         getModel: () => 'test-model',
@@ -218,11 +226,14 @@ describe('loggers', () => {
           }),
         }),
         isInteractive: () => false,
+        getExperiments: () => undefined,
+        getExperimentsAsync: async () => undefined,
       } as unknown as Config;
 
       const startSessionEvent = new StartSessionEvent(mockConfig);
       logCliConfiguration(mockConfig, startSessionEvent);
 
+      await new Promise(process.nextTick);
       expect(mockLogger.emit).toHaveBeenCalledWith({
         body: 'CLI configuration loaded.',
         attributes: {
@@ -263,6 +274,8 @@ describe('loggers', () => {
       getTelemetryLogPromptsEnabled: () => true,
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     it('should log a user prompt', () => {
@@ -300,6 +313,8 @@ describe('loggers', () => {
         getTargetDir: () => 'target-dir',
         getUsageStatisticsEnabled: () => true,
         isInteractive: () => false,
+        getExperiments: () => undefined,
+        getExperimentsAsync: async () => undefined,
       } as unknown as Config;
       const event = new UserPromptEvent(
         11,
@@ -335,6 +350,8 @@ describe('loggers', () => {
       getTelemetryEnabled: () => true,
       getTelemetryLogPromptsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as Config;
 
     const mockMetrics = {
@@ -511,6 +528,8 @@ describe('loggers', () => {
       getTelemetryEnabled: () => true,
       getTelemetryLogPromptsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as Config;
 
     const mockMetrics = {
@@ -643,6 +662,8 @@ describe('loggers', () => {
       getTelemetryEnabled: () => true,
       getTelemetryLogPromptsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
       getContentGeneratorConfig: () => ({
         authType: AuthType.LOGIN_WITH_GOOGLE,
       }),
@@ -719,6 +740,8 @@ describe('loggers', () => {
         getTelemetryEnabled: () => true,
         getTelemetryLogPromptsEnabled: () => true, // Enabled
         isInteractive: () => false,
+        getExperiments: () => undefined,
+        getExperimentsAsync: async () => undefined,
         getContentGeneratorConfig: () => ({
           authType: AuthType.USE_GEMINI,
         }),
@@ -806,6 +829,8 @@ describe('loggers', () => {
         getTelemetryEnabled: () => true,
         getTelemetryLogPromptsEnabled: () => false, // Disabled
         isInteractive: () => false,
+        getExperiments: () => undefined,
+        getExperimentsAsync: async () => undefined,
         getContentGeneratorConfig: () => ({
           authType: AuthType.USE_VERTEX_AI,
         }),
@@ -859,6 +884,8 @@ describe('loggers', () => {
         getTelemetryEnabled: () => true,
         getTelemetryLogPromptsEnabled: () => true,
         isInteractive: () => false,
+        getExperiments: () => undefined,
+        getExperimentsAsync: async () => undefined,
         getUsageStatisticsEnabled: () => true,
         getContentGeneratorConfig: () => ({
           authType: AuthType.USE_GEMINI,
@@ -895,6 +922,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     it('should log flash fallback event', () => {
@@ -922,6 +951,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -1016,6 +1047,8 @@ describe('loggers', () => {
       getTelemetryEnabled: () => true,
       getTelemetryLogPromptsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as Config;
 
     const mockMetrics = {
@@ -1053,6 +1086,7 @@ describe('loggers', () => {
           resultDisplay: {
             fileDiff: 'diff',
             fileName: 'file.txt',
+            filePath: 'file.txt',
             originalContent: 'old content',
             newContent: 'new content',
             diffStat: {
@@ -1485,6 +1519,7 @@ describe('loggers', () => {
         false,
         undefined,
         undefined,
+        undefined,
         'test-extension',
         'test-extension-id',
       );
@@ -1585,6 +1620,8 @@ describe('loggers', () => {
       getTelemetryEnabled: () => true,
       getTelemetryLogPromptsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as Config;
 
     const mockMetrics = {
@@ -1645,6 +1682,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     it('should log a tool output truncated event', () => {
@@ -1653,7 +1692,6 @@ describe('loggers', () => {
         originalContentLength: 1000,
         truncatedContentLength: 100,
         threshold: 500,
-        lines: 10,
       });
 
       logToolOutputTruncated(mockConfig, event);
@@ -1673,7 +1711,6 @@ describe('loggers', () => {
           original_content_length: 1000,
           truncated_content_length: 100,
           threshold: 500,
-          lines: 10,
         },
       });
     });
@@ -1684,6 +1721,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -1725,6 +1764,37 @@ describe('loggers', () => {
       );
     });
 
+    it('should log the event with numerical routing fields', () => {
+      const event = new ModelRoutingEvent(
+        'gemini-pro',
+        'NumericalClassifier (Strict)',
+        150,
+        '[Score: 90 / Threshold: 80] reasoning',
+        false,
+        undefined,
+        true,
+        '80',
+      );
+
+      logModelRouting(mockConfig, event);
+
+      expect(
+        ClearcutLogger.prototype.logModelRoutingEvent,
+      ).toHaveBeenCalledWith(event);
+
+      expect(mockLogger.emit).toHaveBeenCalledWith({
+        body: 'Model routing decision. Model: gemini-pro, Source: NumericalClassifier (Strict)',
+        attributes: {
+          'session.id': 'test-session-id',
+          'user.email': 'test-user@example.com',
+          'installation.id': 'test-installation-id',
+          ...event,
+          'event.name': EVENT_MODEL_ROUTING,
+          interactive: false,
+        },
+      });
+    });
+
     it('should only log to Clearcut if OTEL SDK is not initialized', () => {
       vi.spyOn(sdk, 'isTelemetrySdkInitialized').mockReturnValue(false);
       vi.spyOn(sdk, 'bufferTelemetryEvent').mockImplementation(() => {});
@@ -1753,6 +1823,8 @@ describe('loggers', () => {
       getUsageStatisticsEnabled: () => true,
       getContentGeneratorConfig: () => null,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -1803,6 +1875,8 @@ describe('loggers', () => {
       getUsageStatisticsEnabled: () => true,
       getContentGeneratorConfig: () => null,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -1855,6 +1929,8 @@ describe('loggers', () => {
       getUsageStatisticsEnabled: () => true,
       getContentGeneratorConfig: () => null,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -1899,6 +1975,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -1944,6 +2022,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -1989,6 +2069,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -2025,6 +2107,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -2076,6 +2160,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
 
     beforeEach(() => {
@@ -2111,6 +2197,8 @@ describe('loggers', () => {
       getSessionId: () => 'test-session-id',
       getUsageStatisticsEnabled: () => true,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
       getTelemetryLogPromptsEnabled: () => false,
     } as unknown as Config;
 
@@ -2166,7 +2254,7 @@ describe('loggers', () => {
   });
 
   describe('Telemetry Buffering', () => {
-    it('should buffer events when SDK is not initialized', () => {
+    it('should buffer events when SDK is not initialized', async () => {
       vi.spyOn(sdk, 'isTelemetrySdkInitialized').mockReturnValue(false);
       const bufferSpy = vi
         .spyOn(sdk, 'bufferTelemetryEvent')

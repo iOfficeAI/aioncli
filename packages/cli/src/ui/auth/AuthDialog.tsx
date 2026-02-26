@@ -31,6 +31,7 @@ interface AuthDialogProps {
   setAuthState: (state: AuthState) => void;
   authError: string | null;
   onAuthError: (error: string | null) => void;
+  setAuthContext: (context: { requiresRestart?: boolean }) => void;
 }
 
 export function AuthDialog({
@@ -39,6 +40,7 @@ export function AuthDialog({
   setAuthState,
   authError,
   onAuthError,
+  setAuthContext,
 }: AuthDialogProps): React.JSX.Element {
   const [exiting, setExiting] = useState(false);
   let items = [
@@ -86,9 +88,9 @@ export function AuthDialog({
     },
   ];
 
-  if (settings.merged.security?.auth?.enforcedType) {
+  if (settings.merged.security.auth.enforcedType) {
     items = items.filter(
-      (item) => item.value === settings.merged.security?.auth?.enforcedType,
+      (item) => item.value === settings.merged.security.auth.enforcedType,
     );
   }
 
@@ -96,13 +98,15 @@ export function AuthDialog({
   const defaultAuthTypeEnv = process.env['GEMINI_DEFAULT_AUTH_TYPE'];
   if (
     defaultAuthTypeEnv &&
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     Object.values(AuthType).includes(defaultAuthTypeEnv as AuthType)
   ) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     defaultAuthType = defaultAuthTypeEnv as AuthType;
   }
 
   let initialAuthIndex = items.findIndex((item) => {
-    if (settings.merged.security?.auth?.selectedType) {
+    if (settings.merged.security.auth.selectedType) {
       return item.value === settings.merged.security.auth.selectedType;
     }
 
@@ -130,7 +134,7 @@ export function AuthDialog({
 
     return item.value === AuthType.LOGIN_WITH_GOOGLE;
   });
-  if (settings.merged.security?.auth?.enforcedType) {
+  if (settings.merged.security.auth.enforcedType) {
     initialAuthIndex = 0;
   }
 
@@ -140,6 +144,11 @@ export function AuthDialog({
         return;
       }
       if (authType) {
+        if (authType === AuthType.LOGIN_WITH_GOOGLE) {
+          setAuthContext({ requiresRestart: true });
+        } else {
+          setAuthContext({});
+        }
         await clearCachedCredentialFile();
 
         settings.setValue(scope, 'security.auth.selectedType', authType);
@@ -185,7 +194,7 @@ export function AuthDialog({
       }
       setAuthState(AuthState.Unauthenticated);
     },
-    [settings, config, setAuthState, exiting],
+    [settings, config, setAuthState, exiting, setAuthContext],
   );
 
   const handleAuthSelect = (authMethod: AuthType) => {
@@ -204,18 +213,20 @@ export function AuthDialog({
         // Prevent exit if there is an error message.
         // This means they user is not authenticated yet.
         if (authError) {
-          return;
+          return true;
         }
-        if (settings.merged.security?.auth?.selectedType === undefined) {
+        if (settings.merged.security.auth.selectedType === undefined) {
           // Prevent exiting if no auth method is set
           onAuthError(
             'You must select an auth method to proceed. Press Ctrl+C twice to exit.',
           );
-          return;
+          return true;
         }
         // eslint-disable-next-line @typescript-eslint/no-floating-promises
         onSelect(undefined, SettingScope.User);
+        return true;
       }
+      return false;
     },
     { isActive: true },
   );

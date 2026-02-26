@@ -4,8 +4,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { escapePath, unescapePath, isSubpath, shortenPath } from './paths.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import * as fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import {
+  escapePath,
+  unescapePath,
+  isSubpath,
+  shortenPath,
+  resolveToRealPath,
+} from './paths.js';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>();
+  return {
+    ...(actual as object),
+    realpathSync: (p: string) => p,
+  };
+});
 
 describe('escapePath', () => {
   it.each([
@@ -25,7 +42,11 @@ describe('escapePath', () => {
     ['double quotes', 'file"name.txt', 'file\\"name.txt'],
     ['hash symbols', 'file#name.txt', 'file\\#name.txt'],
     ['exclamation marks', 'file!name.txt', 'file\\!name.txt'],
-    ['tildes', 'file~name.txt', 'file\\~name.txt'],
+    [
+      'tildes',
+      'file~name.txt',
+      process.platform === 'win32' ? 'file~name.txt' : 'file\\~name.txt',
+    ],
     [
       'less than and greater than signs',
       'file<name>.txt',
@@ -82,10 +103,15 @@ describe('escapePath', () => {
     expect(escapePath('')).toBe('');
   });
 
-  it('should handle paths with only special characters', () => {
-    expect(escapePath(' ()[]{};&|*?$`\'"#!~<>')).toBe(
-      '\\ \\(\\)\\[\\]\\{\\}\\;\\&\\|\\*\\?\\$\\`\\\'\\"\\#\\!\\~\\<\\>',
+  it('should handle paths with multiple special characters', () => {
+    expect(escapePath(' ()[]{};&|*?$`\'"#!<>')).toBe(
+      '\\ \\(\\)\\[\\]\\{\\}\\;\\&\\|\\*\\?\\$\\`\\\'\\"\\#\\!\\<\\>',
     );
+  });
+
+  it('should handle tildes based on platform', () => {
+    const expected = process.platform === 'win32' ? '~' : '\\~';
+    expect(escapePath('~')).toBe(expected);
   });
 });
 
@@ -113,12 +139,12 @@ describe('unescapePath', () => {
     );
   });
 
-  it('should handle all special characters', () => {
+  it('should handle all special characters but tilda', () => {
     expect(
       unescapePath(
-        '\\ \\(\\)\\[\\]\\{\\}\\;\\&\\|\\*\\?\\$\\`\\\'\\"\\#\\!\\~\\<\\>',
+        '\\ \\(\\)\\[\\]\\{\\}\\;\\&\\|\\*\\?\\$\\`\\\'\\"\\#\\!\\<\\>',
       ),
-    ).toBe(' ()[]{};&|*?$`\'"#!~<>');
+    ).toBe(' ()[]{};&|*?$`\'"#!<>');
   });
 
   it('should be the inverse of escapePath', () => {
@@ -470,5 +496,45 @@ describe('shortenPath', () => {
       expect(result).toBe('\\s...\\...\\file.txt');
       expect(result.length).toBeLessThanOrEqual(18);
     });
+  });
+});
+
+describe('resolveToRealPath', () => {
+  it.each([
+    {
+      description:
+        'should return path as-is if no special characters or protocol',
+      input: path.resolve('simple', 'path'),
+      expected: path.resolve('simple', 'path'),
+    },
+    {
+      description: 'should remove file:// protocol',
+      input: pathToFileURL(path.resolve('path', 'to', 'file')).toString(),
+      expected: path.resolve('path', 'to', 'file'),
+    },
+    {
+      description: 'should decode URI components',
+      input: path.resolve('path', 'to', 'some folder').replace(/ /g, '%20'),
+      expected: path.resolve('path', 'to', 'some folder'),
+    },
+    {
+      description: 'should handle both file protocol and encoding',
+      input: pathToFileURL(path.resolve('path', 'to', 'My Project')).toString(),
+      expected: path.resolve('path', 'to', 'My Project'),
+    },
+  ])('$description', ({ input, expected }) => {
+    expect(resolveToRealPath(input)).toBe(expected);
+  });
+
+  it('should return decoded path even if fs.realpathSync fails', () => {
+    vi.spyOn(fs, 'realpathSync').mockImplementationOnce(() => {
+      throw new Error('File not found');
+    });
+
+    const p = path.resolve('path', 'to', 'New Project');
+    const input = pathToFileURL(p).toString();
+    const expected = p;
+
+    expect(resolveToRealPath(input)).toBe(expected);
   });
 });

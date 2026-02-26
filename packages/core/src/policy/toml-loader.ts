@@ -46,6 +46,7 @@ const PolicyRuleSchema = z.object({
     }),
   modes: z.array(z.nativeEnum(ApprovalMode)).optional(),
   allow_redirection: z.boolean().optional(),
+  deny_message: z.string().optional(),
 });
 
 /**
@@ -233,6 +234,7 @@ export async function loadPoliciesFromToml(
         .filter((entry) => entry.isFile() && entry.name.endsWith('.toml'))
         .map((entry) => entry.name);
     } catch (e) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const error = e as NodeJS.ErrnoException;
       if (error.code === 'ENOENT') {
         // Directory doesn't exist, skip it (not an error)
@@ -261,6 +263,7 @@ export async function loadPoliciesFromToml(
         try {
           parsed = toml.parse(fileContent);
         } catch (e) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
           const error = e as Error;
           errors.push({
             filePath,
@@ -346,6 +349,8 @@ export async function loadPoliciesFromToml(
                   priority: transformPriority(rule.priority, tier),
                   modes: rule.modes,
                   allowRedirection: rule.allow_redirection,
+                  source: `${tierName.charAt(0).toUpperCase() + tierName.slice(1)}: ${file}`,
+                  denyMessage: rule.deny_message,
                 };
 
                 // Compile regex pattern
@@ -353,6 +358,7 @@ export async function loadPoliciesFromToml(
                   try {
                     policyRule.argsPattern = new RegExp(argsPattern);
                   } catch (e) {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
                     const error = e as Error;
                     errors.push({
                       filePath,
@@ -408,6 +414,7 @@ export async function loadPoliciesFromToml(
                 const safetyCheckerRule: SafetyCheckerRule = {
                   toolName: effectiveToolName,
                   priority: checker.priority,
+                  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
                   checker: checker.checker as SafetyCheckerConfig,
                   modes: checker.modes,
                 };
@@ -416,6 +423,7 @@ export async function loadPoliciesFromToml(
                   try {
                     safetyCheckerRule.argsPattern = new RegExp(argsPattern);
                   } catch (e) {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
                     const error = e as Error;
                     errors.push({
                       filePath,
@@ -437,6 +445,7 @@ export async function loadPoliciesFromToml(
 
         checkers.push(...parsedCheckers);
       } catch (e) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         const error = e as NodeJS.ErrnoException;
         // Catch-all for unexpected errors
         if (error.code !== 'ENOENT') {

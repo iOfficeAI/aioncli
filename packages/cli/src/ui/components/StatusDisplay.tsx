@@ -25,41 +25,17 @@ export const StatusDisplay: React.FC<StatusDisplayProps> = ({
   const config = useConfig();
 
   if (process.env['GEMINI_SYSTEM_MD']) {
-    return <Text color={theme.status.error}>|⌐■_■| </Text>;
-  }
-
-  if (uiState.ctrlCPressedOnce) {
-    return (
-      <Text color={theme.status.warning}>Press Ctrl+C again to exit.</Text>
-    );
-  }
-
-  if (uiState.warningMessage) {
-    return <Text color={theme.status.warning}>{uiState.warningMessage}</Text>;
-  }
-
-  if (uiState.ctrlDPressedOnce) {
-    return (
-      <Text color={theme.status.warning}>Press Ctrl+D again to exit.</Text>
-    );
-  }
-
-  if (uiState.showEscapePrompt) {
-    return <Text color={theme.text.secondary}>Press Esc again to clear.</Text>;
-  }
-
-  if (uiState.queueErrorMessage) {
-    return <Text color={theme.status.error}>{uiState.queueErrorMessage}</Text>;
+    return <Text color={theme.status.error}>|⌐■_■|</Text>;
   }
 
   if (
     uiState.activeHooks.length > 0 &&
-    (settings.merged.hooks?.notifications ?? true)
+    settings.merged.hooksConfig.notifications
   ) {
     return <HookStatusDisplay activeHooks={uiState.activeHooks} />;
   }
 
-  if (!settings.merged.ui?.hideContextSummary && !hideContextSummary) {
+  if (!settings.merged.ui.hideContextSummary && !hideContextSummary) {
     return (
       <ContextSummaryDisplay
         ideContext={uiState.ideContextState}
@@ -69,7 +45,8 @@ export const StatusDisplay: React.FC<StatusDisplayProps> = ({
         blockedMcpServers={
           config.getMcpClientManager()?.getBlockedMcpServers() ?? []
         }
-        skillCount={config.getSkillManager().getSkills().length}
+        skillCount={config.getSkillManager().getDisplayableSkills().length}
+        backgroundProcessCount={uiState.backgroundShellCount}
       />
     );
   }

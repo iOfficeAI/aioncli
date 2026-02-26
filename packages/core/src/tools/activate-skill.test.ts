@@ -76,6 +76,34 @@ describe('ActivateSkillTool', () => {
     expect(details.prompt).toContain('Mock folder structure');
   });
 
+  it('should skip confirmation for built-in skills', async () => {
+    const builtinSkill = {
+      name: 'builtin-skill',
+      description: 'A built-in skill',
+      location: '/path/to/builtin/SKILL.md',
+      isBuiltin: true,
+      body: 'Built-in instructions',
+    };
+    vi.mocked(mockConfig.getSkillManager().getSkill).mockReturnValue(
+      builtinSkill,
+    );
+    vi.mocked(mockConfig.getSkillManager().getSkills).mockReturnValue([
+      builtinSkill,
+    ]);
+
+    const params = { name: 'builtin-skill' };
+    const toolWithBuiltin = new ActivateSkillTool(mockConfig, mockMessageBus);
+    const invocation = toolWithBuiltin.build(params);
+
+    const details = await (
+      invocation as unknown as {
+        getConfirmationDetails: (signal: AbortSignal) => Promise<unknown>;
+      }
+    ).getConfirmationDetails(new AbortController().signal);
+
+    expect(details).toBe(false);
+  });
+
   it('should activate a valid skill and return its content in XML tags', async () => {
     const params = { name: 'test-skill' };
     const invocation = tool.build(params);
@@ -87,14 +115,14 @@ describe('ActivateSkillTool', () => {
     expect(mockConfig.getWorkspaceContext().addDirectory).toHaveBeenCalledWith(
       '/path/to/test-skill',
     );
-    expect(result.llmContent).toContain('<ACTIVATED_SKILL name="test-skill">');
-    expect(result.llmContent).toContain('<INSTRUCTIONS>');
+    expect(result.llmContent).toContain('<activated_skill name="test-skill">');
+    expect(result.llmContent).toContain('<instructions>');
     expect(result.llmContent).toContain('Skill instructions content.');
-    expect(result.llmContent).toContain('</INSTRUCTIONS>');
-    expect(result.llmContent).toContain('<AVAILABLE_RESOURCES>');
+    expect(result.llmContent).toContain('</instructions>');
+    expect(result.llmContent).toContain('<available_resources>');
     expect(result.llmContent).toContain('Mock folder structure');
-    expect(result.llmContent).toContain('</AVAILABLE_RESOURCES>');
-    expect(result.llmContent).toContain('</ACTIVATED_SKILL>');
+    expect(result.llmContent).toContain('</available_resources>');
+    expect(result.llmContent).toContain('</activated_skill>');
     expect(result.returnDisplay).toContain('Skill **test-skill** activated');
     expect(result.returnDisplay).toContain('Mock folder structure');
   });

@@ -46,6 +46,8 @@ export interface ContentGenerator {
   embedContent(request: EmbedContentParameters): Promise<EmbedContentResponse>;
 
   userTier?: UserTierId;
+
+  userTierName?: string;
 }
 
 export enum AuthType {
@@ -155,15 +157,17 @@ export async function createContentGenerator(
 ): Promise<ContentGenerator> {
   const generator = await (async () => {
     if (gcConfig.fakeResponses) {
-      return new LoggingContentGenerator(
-        await FakeContentGenerator.fromFile(gcConfig.fakeResponses),
-        gcConfig,
+      const fakeGenerator = await FakeContentGenerator.fromFile(
+        gcConfig.fakeResponses,
       );
+      return new LoggingContentGenerator(fakeGenerator, gcConfig);
     }
     const version = await getVersion();
     const model = resolveModel(
       gcConfig.getModel(),
-      gcConfig.getPreviewFeatures(),
+      config.authType === AuthType.USE_GEMINI ||
+        config.authType === AuthType.USE_VERTEX_AI ||
+        ((await gcConfig.getGemini31Launched?.()) ?? false),
     );
     const customHeadersEnv =
       process.env['GEMINI_CLI_CUSTOM_HEADERS'] || undefined;
@@ -171,6 +175,7 @@ export async function createContentGenerator(
     const customHeadersMap = parseCustomHeaders(customHeadersEnv);
     const apiKeyAuthMechanism =
       process.env['GEMINI_API_KEY_AUTH_MECHANISM'] || 'x-goog-api-key';
+    const apiVersionEnv = process.env['GOOGLE_GENAI_API_VERSION'];
 
     const baseHeaders: Record<string, string> = {
       ...customHeadersMap,
@@ -220,6 +225,7 @@ export async function createContentGenerator(
         apiKey: config.apiKey === '' ? undefined : config.apiKey,
         vertexai: config.vertexai,
         httpOptions,
+        ...(apiVersionEnv && { apiVersion: apiVersionEnv }),
       });
       return new LoggingContentGenerator(googleGenAI.models, gcConfig);
     }

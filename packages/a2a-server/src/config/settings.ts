@@ -6,7 +6,6 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { homedir } from 'node:os';
 
 import type { MCPServerConfig } from '@google/gemini-cli-core';
 import {
@@ -14,6 +13,7 @@ import {
   GEMINI_DIR,
   getErrorMessage,
   type TelemetrySettings,
+  homedir,
 } from '@google/gemini-cli-core';
 import stripJsonComments from 'strip-json-comments';
 
@@ -31,14 +31,13 @@ export interface Settings {
   showMemoryUsage?: boolean;
   checkpointing?: CheckpointingSettings;
   folderTrust?: boolean;
-  general?: {
-    previewFeatures?: boolean;
-  };
 
   // Git-aware file filtering settings
   fileFiltering?: {
     respectGitIgnore?: boolean;
+    respectGeminiIgnore?: boolean;
     enableRecursiveFileSearch?: boolean;
+    customIgnoreFilePaths?: string[];
   };
 }
 
@@ -68,6 +67,7 @@ export function loadSettings(workspaceDir: string): Settings {
   try {
     if (fs.existsSync(USER_SETTINGS_PATH)) {
       const userContent = fs.readFileSync(USER_SETTINGS_PATH, 'utf-8');
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const parsedUserSettings = JSON.parse(
         stripJsonComments(userContent),
       ) as Settings;
@@ -90,6 +90,7 @@ export function loadSettings(workspaceDir: string): Settings {
   try {
     if (fs.existsSync(workspaceSettingsPath)) {
       const projectContent = fs.readFileSync(workspaceSettingsPath, 'utf-8');
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const parsedWorkspaceSettings = JSON.parse(
         stripJsonComments(projectContent),
       ) as Settings;
@@ -140,10 +141,12 @@ function resolveEnvVarsInObject<T>(obj: T): T {
   }
 
   if (typeof obj === 'string') {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return resolveEnvVarsInString(obj) as unknown as T;
   }
 
   if (Array.isArray(obj)) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return obj.map((item) => resolveEnvVarsInObject(item)) as unknown as T;
   }
 

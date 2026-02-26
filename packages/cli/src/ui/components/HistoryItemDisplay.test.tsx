@@ -15,6 +15,7 @@ import type {
 } from '@google/gemini-cli-core';
 import { ToolGroupMessage } from './messages/ToolGroupMessage.js';
 import { renderWithProviders } from '../../test-utils/render.js';
+import { createMockSettings } from '../../test-utils/settings.js';
 
 // Mock child components
 vi.mock('./messages/ToolGroupMessage.js', () => ({
@@ -70,6 +71,30 @@ describe('<HistoryItemDisplay />', () => {
       expect(lastFrame()).toMatchSnapshot();
     },
   );
+
+  it('renders AgentsStatus for "agents_list" type', () => {
+    const item: HistoryItem = {
+      ...baseItem,
+      type: MessageType.AGENTS_LIST,
+      agents: [
+        {
+          name: 'local_agent',
+          displayName: 'Local Agent',
+          description: '  Local agent description.\n    Second line.',
+          kind: 'local',
+        },
+        {
+          name: 'remote_agent',
+          description: 'Remote agent description.',
+          kind: 'remote',
+        },
+      ],
+    };
+    const { lastFrame } = renderWithProviders(
+      <HistoryItemDisplay {...baseItem} item={item} />,
+    );
+    expect(lastFrame()).toMatchSnapshot();
+  });
 
   it('renders StatsDisplay for "stats" type', () => {
     const item: HistoryItem = {
@@ -184,6 +209,7 @@ describe('<HistoryItemDisplay />', () => {
             title: 'Run Shell Command',
             command: 'echo "\u001b[31mhello\u001b[0m"',
             rootCommand: 'echo',
+            rootCommands: ['echo'],
             onConfirm: async () => {},
           },
         },
@@ -205,6 +231,44 @@ describe('<HistoryItemDisplay />', () => {
     expect(confirmationDetails.command).toBe(
       'echo "\\u001b[31mhello\\u001b[0m"',
     );
+  });
+
+  describe('thinking items', () => {
+    it('renders thinking item when enabled', () => {
+      const item: HistoryItem = {
+        ...baseItem,
+        type: 'thinking',
+        thought: { subject: 'Thinking', description: 'test' },
+      };
+      const { lastFrame } = renderWithProviders(
+        <HistoryItemDisplay {...baseItem} item={item} />,
+        {
+          settings: createMockSettings({
+            merged: { ui: { inlineThinkingMode: 'full' } },
+          }),
+        },
+      );
+
+      expect(lastFrame()).toMatchSnapshot();
+    });
+
+    it('does not render thinking item when disabled', () => {
+      const item: HistoryItem = {
+        ...baseItem,
+        type: 'thinking',
+        thought: { subject: 'Thinking', description: 'test' },
+      };
+      const { lastFrame } = renderWithProviders(
+        <HistoryItemDisplay {...baseItem} item={item} />,
+        {
+          settings: createMockSettings({
+            merged: { ui: { inlineThinkingMode: 'off' } },
+          }),
+        },
+      );
+
+      expect(lastFrame()).toBe('');
+    });
   });
 
   describe.each([true, false])(

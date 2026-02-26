@@ -14,8 +14,8 @@ let esbuild;
 try {
   esbuild = (await import('esbuild')).default;
 } catch (_error) {
-  console.warn('esbuild not available, skipping bundle step');
-  process.exit(0);
+  console.error('esbuild not available - cannot build bundle');
+  process.exit(1);
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -62,6 +62,8 @@ const external = [
   '@lydell/node-pty-linux-x64',
   '@lydell/node-pty-win32-arm64',
   '@lydell/node-pty-win32-x64',
+  'keytar',
+  'gemini-cli-devtools',
 ];
 
 const baseConfig = {
@@ -71,6 +73,10 @@ const baseConfig = {
   external,
   loader: { '.node': 'file' },
   write: true,
+};
+
+const commonAliases = {
+  punycode: 'punycode/',
 };
 
 const cliConfig = {
@@ -86,6 +92,7 @@ const cliConfig = {
   plugins: createWasmPlugins(),
   alias: {
     'is-in-ci': path.resolve(__dirname, 'packages/cli/src/patches/is-in-ci.ts'),
+    ...commonAliases,
   },
   metafile: true,
 };
@@ -101,6 +108,7 @@ const a2aServerConfig = {
     'process.env.CLI_VERSION': JSON.stringify(pkg.version),
   },
   plugins: createWasmPlugins(),
+  alias: commonAliases,
 };
 
 Promise.allSettled([

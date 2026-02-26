@@ -10,7 +10,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { BaseTokenStorage } from './base-token-storage.js';
 import type { OAuthCredentials } from './types.js';
-import { GEMINI_DIR } from '../../utils/paths.js';
+import { GEMINI_DIR, homedir } from '../../utils/paths.js';
 
 export class FileTokenStorage extends BaseTokenStorage {
   private readonly tokenFilePath: string;
@@ -18,7 +18,7 @@ export class FileTokenStorage extends BaseTokenStorage {
 
   constructor(serviceName: string) {
     super(serviceName);
-    const configDir = path.join(os.homedir(), GEMINI_DIR);
+    const configDir = path.join(homedir(), GEMINI_DIR);
     this.tokenFilePath = path.join(configDir, 'mcp-oauth-tokens-v2.json');
     this.encryptionKey = this.deriveEncryptionKey();
   }
@@ -72,9 +72,11 @@ export class FileTokenStorage extends BaseTokenStorage {
     try {
       const data = await fs.readFile(this.tokenFilePath, 'utf-8');
       const decrypted = this.decrypt(data);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const tokens = JSON.parse(decrypted) as Record<string, OAuthCredentials>;
       return new Map(Object.entries(tokens));
     } catch (error: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const err = error as NodeJS.ErrnoException & { message?: string };
       if (err.code === 'ENOENT') {
         return new Map();
@@ -144,6 +146,7 @@ export class FileTokenStorage extends BaseTokenStorage {
       try {
         await fs.unlink(this.tokenFilePath);
       } catch (error: unknown) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         const err = error as NodeJS.ErrnoException;
         if (err.code !== 'ENOENT') {
           throw error;
@@ -176,6 +179,7 @@ export class FileTokenStorage extends BaseTokenStorage {
     try {
       await fs.unlink(this.tokenFilePath);
     } catch (error: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'ENOENT') {
         throw error;

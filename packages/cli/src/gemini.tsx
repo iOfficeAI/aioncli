@@ -32,7 +32,10 @@ import {
   runExitCleanup,
   registerTelemetryConfig,
 } from './utils/cleanup.js';
-import { getCliVersion } from './utils/version.js';
+import {
+  cleanupToolOutputFiles,
+  cleanupExpiredSessions,
+} from './utils/sessionCleanup.js';
 import {
   type Config,
   type ResumedSessionData,
@@ -61,26 +64,26 @@ import {
   ExitCodes,
   SessionStartSource,
   SessionEndReason,
-  fireSessionStartHook,
-  fireSessionEndHook,
   getVersion,
+  ValidationCancelledError,
+  ValidationRequiredError,
+  type AdminControlsSettings,
 } from '@google/gemini-cli-core';
 import {
   initializeApp,
   type InitializationResult,
 } from './core/initializer.js';
 import { validateAuthMethod } from './config/auth.js';
-import { setMaxSizedBoxDebugging } from './ui/components/shared/MaxSizedBox.js';
 import { runZedIntegration } from './zed-integration/zedIntegration.js';
-import { cleanupExpiredSessions } from './utils/sessionCleanup.js';
 import { validateNonInteractiveAuth } from './validateNonInterActiveAuth.js';
 import { checkForUpdates } from './ui/utils/updateCheck.js';
 import { handleAutoUpdate } from './utils/handleAutoUpdate.js';
 import { appEvents, AppEvent } from './utils/events.js';
 import { SessionSelector } from './utils/sessionUtils.js';
-import { computeWindowTitle } from './utils/windowTitle.js';
 import { SettingsContext } from './ui/contexts/SettingsContext.js';
 import { MouseProvider } from './ui/contexts/MouseContext.js';
+import { StreamingState } from './ui/types.js';
+import { computeTerminalTitle } from './utils/windowTitle.js';
 
 import { SessionStatsProvider } from './ui/contexts/SessionContext.js';
 import { VimModeProvider } from './ui/contexts/VimModeContext.js';
@@ -95,9 +98,11 @@ import { deleteSession, listSessions } from './utils/sessions.js';
 import { createPolicyUpdater } from './config/policy.js';
 import { ScrollProvider } from './ui/contexts/ScrollProvider.js';
 import { isAlternateBufferEnabled } from './ui/hooks/useAlternateBuffer.js';
+import { TerminalProvider } from './ui/contexts/TerminalContext.js';
 
 import { setupTerminalAndTheme } from './utils/terminalTheme.js';
 import { profiler } from './ui/components/DebugProfiler.js';
+import { runDeferredCommand } from './deferred.js';
 
 const SLOW_RENDER_MS = 200;
 
@@ -216,27 +221,29 @@ export async function startInteractiveUI(
       <SettingsContext.Provider value={settings}>
         <KeypressProvider
           config={config}
-          debugKeystrokeLogging={settings.merged.general?.debugKeystrokeLogging}
+          debugKeystrokeLogging={settings.merged.general.debugKeystrokeLogging}
         >
           <MouseProvider
             mouseEventsEnabled={mouseEventsEnabled}
             debugKeystrokeLogging={
-              settings.merged.general?.debugKeystrokeLogging
+              settings.merged.general.debugKeystrokeLogging
             }
           >
-            <ScrollProvider>
-              <SessionStatsProvider>
-                <VimModeProvider settings={settings}>
-                  <AppContainer
-                    config={config}
-                    startupWarnings={startupWarnings}
-                    version={version}
-                    resumedSessionData={resumedSessionData}
-                    initializationResult={initializationResult}
-                  />
-                </VimModeProvider>
-              </SessionStatsProvider>
-            </ScrollProvider>
+            <TerminalProvider>
+              <ScrollProvider>
+                <SessionStatsProvider>
+                  <VimModeProvider settings={settings}>
+                    <AppContainer
+                      config={config}
+                      startupWarnings={startupWarnings}
+                      version={version}
+                      resumedSessionData={resumedSessionData}
+                      initializationResult={initializationResult}
+                    />
+                  </VimModeProvider>
+                </SessionStatsProvider>
+              </ScrollProvider>
+            </TerminalProvider>
           </MouseProvider>
         </KeypressProvider>
       </SettingsContext.Provider>
@@ -266,8 +273,7 @@ export async function startInteractiveUI(
       patchConsole: false,
       alternateBuffer: useAlternateBuffer,
       incrementalRendering:
-        settings.merged.ui?.incrementalRendering !== false &&
-        useAlternateBuffer,
+        settings.merged.ui.incrementalRendering !== false && useAlternateBuffer,
     },
   );
 
@@ -287,6 +293,14 @@ export async function startInteractiveUI(
 
 export async function main() {
   const cliStartupHandle = startupProfiler.start('cli_startup');
+
+  // Listen for admin controls from parent process (IPC) in non-sandbox mode. In
+  // sandbox mode, we re-fetch the admin controls from the server once we enter
+  // the sandbox.
+  // TODO: Cache settings in sandbox mode as well.
+  const adminControlsListner = setupAdminControlsListener();
+  registerCleanup(adminControlsListner.cleanup);
+
   const cleanupStdio = patchStdio();
   registerSyncCleanup(() => {
     // This is needed to ensure we don't lose any buffered output.
@@ -312,11 +326,20 @@ export async function main() {
     );
   });
 
-  await cleanupCheckpoints();
+  await Promise.all([
+    cleanupCheckpoints(),
+    cleanupToolOutputFiles(settings.merged),
+  ]);
 
   const parseArgsHandle = startupProfiler.start('parse_arguments');
   const argv = await parseArguments(settings.merged);
   parseArgsHandle?.end();
+
+  if (argv.startupMessages) {
+    argv.startupMessages.forEach((msg) => {
+      coreEvents.emitFeedback('info', msg);
+    });
+  }
 
   // Check for invalid input combinations early to prevent crashes
   if (argv.promptInteractive && !process.stdin.isTTY) {
@@ -339,13 +362,13 @@ export async function main() {
   registerCleanup(consolePatcher.cleanup);
 
   dns.setDefaultResultOrder(
-    validateDnsResolutionOrder(settings.merged.advanced?.dnsResolutionOrder),
+    validateDnsResolutionOrder(settings.merged.advanced.dnsResolutionOrder),
   );
 
   // Set a default auth type if one isn't set or is set to a legacy type
   if (
-    !settings.merged.security?.auth?.selectedType ||
-    settings.merged.security?.auth?.selectedType === AuthType.LEGACY_CLOUD_SHELL
+    !settings.merged.security.auth.selectedType ||
+    settings.merged.security.auth.selectedType === AuthType.LEGACY_CLOUD_SHELL
   ) {
     if (
       process.env['CLOUD_SHELL'] === 'true' ||
@@ -353,15 +376,75 @@ export async function main() {
     ) {
       settings.setValue(
         SettingScope.User,
-        'selectedAuthType',
+        'security.auth.selectedType',
         AuthType.COMPUTE_ADC,
       );
     }
   }
 
+  const partialConfig = await loadCliConfig(settings.merged, sessionId, argv, {
+    projectHooks: settings.workspace.settings.hooks,
+  });
+  adminControlsListner.setConfig(partialConfig);
+
+  // Refresh auth to fetch remote admin settings from CCPA and before entering
+  // the sandbox because the sandbox will interfere with the Oauth2 web
+  // redirect.
+  let initialAuthFailed = false;
+  if (!settings.merged.security.auth.useExternal) {
+    try {
+      if (
+        partialConfig.isInteractive() &&
+        settings.merged.security.auth.selectedType
+      ) {
+        const err = validateAuthMethod(
+          settings.merged.security.auth.selectedType,
+        );
+        if (err) {
+          throw new Error(err);
+        }
+
+        await partialConfig.refreshAuth(
+          settings.merged.security.auth.selectedType,
+        );
+      } else if (!partialConfig.isInteractive()) {
+        const authType = await validateNonInteractiveAuth(
+          settings.merged.security.auth.selectedType,
+          settings.merged.security.auth.useExternal,
+          partialConfig,
+          settings,
+        );
+        await partialConfig.refreshAuth(authType);
+      }
+    } catch (err) {
+      if (err instanceof ValidationCancelledError) {
+        // User cancelled verification, exit immediately.
+        await runExitCleanup();
+        process.exit(ExitCodes.SUCCESS);
+      }
+
+      // If validation is required, we don't treat it as a fatal failure.
+      // We allow the app to start, and the React-based ValidationDialog
+      // will handle it.
+      if (!(err instanceof ValidationRequiredError)) {
+        debugLogger.error('Error authenticating:', err);
+        initialAuthFailed = true;
+      }
+    }
+  }
+
+  const remoteAdminSettings = partialConfig.getRemoteAdminSettings();
+  // Set remote admin settings if returned from CCPA.
+  if (remoteAdminSettings) {
+    settings.setRemoteAdminSettings(remoteAdminSettings);
+  }
+
+  // Run deferred command now that we have admin settings.
+  await runDeferredCommand(settings.merged);
+
   // hop into sandbox if we are outside and sandboxing is enabled
   if (!process.env['SANDBOX']) {
-    const memoryArgs = settings.merged.advanced?.autoConfigureMemory
+    const memoryArgs = settings.merged.advanced.autoConfigureMemory
       ? getNodeMemoryArgs(isDebugMode)
       : [];
     const sandboxConfig = await loadSandboxConfig(settings.merged, argv);
@@ -372,44 +455,9 @@ export async function main() {
     // another way to decouple refreshAuth from requiring a config.
 
     if (sandboxConfig) {
-      const partialConfig = await loadCliConfig(
-        settings.merged,
-        sessionId,
-        argv,
-        { projectHooks: settings.workspace.settings.hooks },
-      );
-
-      if (
-        settings.merged.security?.auth?.selectedType &&
-        !settings.merged.security?.auth?.useExternal
-      ) {
-        try {
-          if (partialConfig.isInteractive()) {
-            // Validate authentication here because the sandbox will interfere with the Oauth2 web redirect.
-            const err = validateAuthMethod(
-              settings.merged.security.auth.selectedType,
-            );
-            if (err) {
-              throw new Error(err);
-            }
-
-            await partialConfig.refreshAuth(
-              settings.merged.security.auth.selectedType,
-            );
-          } else {
-            const authType = await validateNonInteractiveAuth(
-              settings.merged.security?.auth?.selectedType,
-              settings.merged.security?.auth?.useExternal,
-              partialConfig,
-              settings,
-            );
-            await partialConfig.refreshAuth(authType);
-          }
-        } catch (err) {
-          debugLogger.error('Error authenticating:', err);
-          await runExitCleanup();
-          process.exit(ExitCodes.FATAL_AUTHENTICATION_ERROR);
-        }
+      if (initialAuthFailed) {
+        await runExitCleanup();
+        process.exit(ExitCodes.FATAL_AUTHENTICATION_ERROR);
       }
       let stdinData = '';
       if (!process.stdin.isTTY) {
@@ -449,7 +497,7 @@ export async function main() {
     } else {
       // Relaunch app so we always have a child process that can be internally
       // restarted if needed.
-      await relaunchAppInChildProcess(memoryArgs, []);
+      await relaunchAppInChildProcess(memoryArgs, [], remoteAdminSettings);
     }
   }
 
@@ -463,6 +511,20 @@ export async function main() {
     });
     loadConfigHandle?.end();
 
+    // Initialize storage immediately after loading config to ensure that
+    // storage-related operations (like listing or resuming sessions) have
+    // access to the project identifier.
+    await config.storage.initialize();
+
+    adminControlsListner.setConfig(config);
+
+    if (config.isInteractive() && settings.merged.general.devtools) {
+      const { setupInitialActivityLogger } = await import(
+        './utils/devtoolsService.js'
+      );
+      await setupInitialActivityLogger(config);
+    }
+
     // Register config for telemetry shutdown
     // This ensures telemetry (including SessionEnd hooks) is properly flushed on exit
     registerTelemetryConfig(config);
@@ -473,11 +535,9 @@ export async function main() {
 
     // Register SessionEnd hook to fire on graceful exit
     // This runs before telemetry shutdown in runExitCleanup()
-    if (config.getEnableHooks() && messageBus) {
-      registerCleanup(async () => {
-        await fireSessionEndHook(messageBus, SessionEndReason.Exit);
-      });
-    }
+    registerCleanup(async () => {
+      await config.getHookSystem()?.fireSessionEndEvent(SessionEndReason.Exit);
+    });
 
     // Cleanup sessions after config initialization
     try {
@@ -498,7 +558,7 @@ export async function main() {
     // Handle --list-sessions flag
     if (config.getListSessions()) {
       // Attempt auth for summary generation (gracefully skips if not configured)
-      const authType = settings.merged.security?.auth?.selectedType;
+      const authType = settings.merged.security.auth.selectedType;
       if (authType) {
         try {
           await config.refreshAuth(authType);
@@ -543,23 +603,23 @@ export async function main() {
       }
 
       // This cleanup isn't strictly needed but may help in certain situations.
-      process.on('SIGTERM', () => {
+      const restoreRawMode = () => {
         process.stdin.setRawMode(wasRaw);
-      });
-      process.on('SIGINT', () => {
-        process.stdin.setRawMode(wasRaw);
-      });
+      };
+      process.off('SIGTERM', restoreRawMode);
+      process.on('SIGTERM', restoreRawMode);
+      process.off('SIGINT', restoreRawMode);
+      process.on('SIGINT', restoreRawMode);
     }
 
     await setupTerminalAndTheme(config, settings);
 
-    setMaxSizedBoxDebugging(isDebugMode);
     const initAppHandle = startupProfiler.start('initialize_app');
     const initializationResult = await initializeApp(config, settings);
     initAppHandle?.end();
 
     if (
-      settings.merged.security?.auth?.selectedType ===
+      settings.merged.security.auth.selectedType ===
         AuthType.LOGIN_WITH_GOOGLE &&
       config.isBrowserLaunchSuppressed()
     ) {
@@ -574,7 +634,7 @@ export async function main() {
     let input = config.getQuestion();
     const startupWarnings = [
       ...(await getStartupWarnings()),
-      ...(await getUserStartupWarnings()),
+      ...(await getUserStartupWarnings(settings.merged)),
     ];
 
     // Handle --resume flag
@@ -628,16 +688,13 @@ export async function main() {
 
     // Fire SessionStart hook through MessageBus (only if hooks are enabled)
     // Must be called AFTER config.initialize() to ensure HookRegistry is loaded
-    const hooksEnabled = config.getEnableHooks();
-    const hookMessageBus = config.getMessageBus();
-    if (hooksEnabled && hookMessageBus) {
-      const sessionStartSource = resumedSessionData
-        ? SessionStartSource.Resume
-        : SessionStartSource.Startup;
-      const result = await fireSessionStartHook(
-        hookMessageBus,
-        sessionStartSource,
-      );
+    const sessionStartSource = resumedSessionData
+      ? SessionStartSource.Resume
+      : SessionStartSource.Startup;
+
+    const hookSystem = config?.getHookSystem();
+    if (hookSystem) {
+      const result = await hookSystem.fireSessionStartEvent(sessionStartSource);
 
       if (result) {
         if (result.systemMessage) {
@@ -646,17 +703,16 @@ export async function main() {
         const additionalContext = result.getAdditionalContext();
         if (additionalContext) {
           // Prepend context to input (System Context -> Stdin -> Question)
-          input = input
-            ? `${additionalContext}\n\n${input}`
-            : additionalContext;
+          const wrappedContext = `<hook_context>${additionalContext}</hook_context>`;
+          input = input ? `${wrappedContext}\n\n${input}` : wrappedContext;
         }
       }
-
-      // Register SessionEnd hook for graceful exit
-      registerCleanup(async () => {
-        await fireSessionEndHook(hookMessageBus, SessionEndReason.Exit);
-      });
     }
+
+    // Register SessionEnd hook for graceful exit
+    registerCleanup(async () => {
+      await config.getHookSystem()?.fireSessionEndEvent(SessionEndReason.Exit);
+    });
 
     if (!input) {
       debugLogger.error(
@@ -678,8 +734,8 @@ export async function main() {
     );
 
     const authType = await validateNonInteractiveAuth(
-      settings.merged.security?.auth?.selectedType,
-      settings.merged.security?.auth?.useExternal,
+      settings.merged.security.auth.selectedType,
+      settings.merged.security.auth.useExternal,
       config,
       settings,
     );
@@ -689,9 +745,6 @@ export async function main() {
       debugLogger.log('Session ID: %s', sessionId);
     }
 
-    const hasDeprecatedPromptArg = process.argv.some((arg) =>
-      arg.startsWith('--prompt'),
-    );
     initializeOutputListenersAndFlush();
 
     await runNonInteractive({
@@ -699,7 +752,6 @@ export async function main() {
       settings,
       input,
       prompt_id,
-      hasDeprecatedPromptArg,
       resumedSessionData,
     });
     // Call cleanup before process.exit, which causes cleanup to not run
@@ -709,12 +761,20 @@ export async function main() {
 }
 
 function setWindowTitle(title: string, settings: LoadedSettings) {
-  if (!settings.merged.ui?.hideWindowTitle) {
-    const windowTitle = computeWindowTitle(title);
-    writeToStdout(`\x1b]2;${windowTitle}\x07`);
+  if (!settings.merged.ui.hideWindowTitle) {
+    // Initial state before React loop starts
+    const windowTitle = computeTerminalTitle({
+      streamingState: StreamingState.Idle,
+      isConfirming: false,
+      isSilentWorking: false,
+      folderName: title,
+      showThoughts: !!settings.merged.ui.showStatusInTitle,
+      useDynamicTitle: settings.merged.ui.dynamicWindowTitle,
+    });
+    writeToStdout(`\x1b]0;${windowTitle}\x07`);
 
     process.on('exit', () => {
-      writeToStdout(`\x1b]2;\x07`);
+      writeToStdout(`\x1b]0;\x07`);
     });
   }
 }
@@ -753,4 +813,38 @@ export function initializeOutputListenersAndFlush() {
     }
   }
   coreEvents.drainBacklogs();
+}
+
+function setupAdminControlsListener() {
+  let pendingSettings: AdminControlsSettings | undefined;
+  let config: Config | undefined;
+
+  const messageHandler = (msg: unknown) => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    const message = msg as {
+      type?: string;
+      settings?: AdminControlsSettings;
+    };
+    if (message?.type === 'admin-settings' && message.settings) {
+      if (config) {
+        config.setRemoteAdminSettings(message.settings);
+      } else {
+        pendingSettings = message.settings;
+      }
+    }
+  };
+
+  process.on('message', messageHandler);
+
+  return {
+    setConfig: (newConfig: Config) => {
+      config = newConfig;
+      if (pendingSettings) {
+        config.setRemoteAdminSettings(pendingSettings);
+      }
+    },
+    cleanup: () => {
+      process.off('message', messageHandler);
+    },
+  };
 }
