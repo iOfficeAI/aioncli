@@ -43,6 +43,10 @@ function getAuthTypeFromEnv(): AuthType | undefined {
   if (process.env['OPENAI_API_KEY']) {
     return AuthType.USE_OPENAI;
   }
+  // Check for Anthropic API key
+  if (process.env['ANTHROPIC_API_KEY']) {
+    return AuthType.USE_ANTHROPIC;
+  }
   return undefined;
 }
 
@@ -53,7 +57,11 @@ export async function validateNonInteractiveAuth(
   settings: LoadedSettings,
 ) {
   try {
-    const effectiveAuthType = configuredAuthType || getAuthTypeFromEnv();
+    // Environment variables take priority over stored settings for non-Google
+    // auth types (OpenAI, Bedrock). This allows users to switch providers by
+    // setting env vars without needing to clear their stored Google OAuth config.
+    const envAuthType = getAuthTypeFromEnv();
+    const effectiveAuthType = envAuthType || configuredAuthType;
 
     const enforcedType = settings.merged.security.auth.enforcedType;
     if (enforcedType && effectiveAuthType !== enforcedType) {
