@@ -26,6 +26,7 @@ import { parseCustomHeaders } from '../utils/customHeaderUtils.js';
 import { RecordingContentGenerator } from './recordingContentGenerator.js';
 import { getVersion, resolveModel } from '../../index.js';
 import { debugLogger } from '../utils/debugLogger.js';
+import type { LlmRole } from '../telemetry/llmRole.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -34,11 +35,13 @@ export interface ContentGenerator {
   generateContent(
     request: GenerateContentParameters,
     userPromptId: string,
+    role: LlmRole,
   ): Promise<GenerateContentResponse>;
 
   generateContentStream(
     request: GenerateContentParameters,
     userPromptId: string,
+    role: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>>;
 
   countTokens(request: CountTokensParameters): Promise<CountTokensResponse>;
@@ -59,6 +62,27 @@ export enum AuthType {
   USE_OPENAI = 'openai',
   USE_ANTHROPIC = 'anthropic',
   USE_BEDROCK = 'bedrock',
+}
+
+/**
+ * Detects the best authentication type based on environment variables.
+ *
+ * Checks in order:
+ * 1. GOOGLE_GENAI_USE_GCA=true -> LOGIN_WITH_GOOGLE
+ * 2. GOOGLE_GENAI_USE_VERTEXAI=true -> USE_VERTEX_AI
+ * 3. GEMINI_API_KEY -> USE_GEMINI
+ */
+export function getAuthTypeFromEnv(): AuthType | undefined {
+  if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
+    return AuthType.LOGIN_WITH_GOOGLE;
+  }
+  if (process.env['GOOGLE_GENAI_USE_VERTEXAI'] === 'true') {
+    return AuthType.USE_VERTEX_AI;
+  }
+  if (process.env['GEMINI_API_KEY']) {
+    return AuthType.USE_GEMINI;
+  }
+  return undefined;
 }
 
 export type ContentGeneratorConfig = {

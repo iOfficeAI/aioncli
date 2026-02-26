@@ -64,6 +64,7 @@ import { resolveModel } from '../config/models.js';
 import type { RetryAvailabilityContext } from '../utils/retry.js';
 import { partToString } from '../utils/partUtils.js';
 import { coreEvents, CoreEvent } from '../utils/events.js';
+import type { LlmRole } from '../telemetry/types.js';
 
 const MAX_TURNS = 100;
 
@@ -659,7 +660,10 @@ export class GeminiClient {
     }
 
     // availability logic
-    const modelConfigKey: ModelConfigKey = { model: modelToUse };
+    const modelConfigKey: ModelConfigKey = {
+      model: modelToUse,
+      isChatModel: true,
+    };
     const { model: finalModel } = applyModelSelection(
       this.config,
       modelConfigKey,
@@ -925,6 +929,7 @@ export class GeminiClient {
     modelConfigKey: ModelConfigKey,
     contents: Content[],
     abortSignal: AbortSignal,
+    role: LlmRole,
   ): Promise<GenerateContentResponse> {
     const desiredModelConfig =
       this.config.modelConfigService.getResolvedConfig(modelConfigKey);
@@ -979,6 +984,7 @@ export class GeminiClient {
             contents,
           },
           this.lastPromptId,
+          role,
         );
       };
       const onPersistent429Callback = async (

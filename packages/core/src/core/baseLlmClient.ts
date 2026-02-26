@@ -31,6 +31,7 @@ import {
   applyModelSelection,
   createAvailabilityContextProvider,
 } from '../availability/policyHelpers.js';
+import { LlmRole } from '../telemetry/types.js';
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 
@@ -56,6 +57,10 @@ export interface GenerateJsonOptions {
    */
   promptId: string;
   /**
+   * The role of the LLM call.
+   */
+  role: LlmRole;
+  /**
    * The maximum number of attempts for the request.
    */
   maxAttempts?: number;
@@ -80,6 +85,10 @@ export interface GenerateContentOptions {
    * A unique ID for the prompt, used for logging/telemetry correlation.
    */
   promptId: string;
+  /**
+   * The role of the LLM call.
+   */
+  role: LlmRole;
   /**
    * The maximum number of attempts for the request.
    */
@@ -119,6 +128,7 @@ export class BaseLlmClient {
       systemInstruction,
       abortSignal,
       promptId,
+      role,
       maxAttempts,
     } = options;
 
@@ -161,6 +171,7 @@ export class BaseLlmClient {
       },
       shouldRetryOnContent,
       'generateJson',
+      role,
     );
 
     // If we are here, the content is valid (not empty and parsable).
@@ -182,6 +193,7 @@ export class BaseLlmClient {
       abortSignal,
       systemInstruction,
       promptId,
+      role,
       maxAttempts,
     } = options;
 
@@ -217,6 +229,7 @@ export class BaseLlmClient {
             contents,
           },
           promptId,
+          role,
         );
 
       const result = await retryWithBackoff(apiCall, {
@@ -346,6 +359,7 @@ export class BaseLlmClient {
       systemInstruction,
       abortSignal,
       promptId,
+      role,
       maxAttempts,
     } = options;
 
@@ -365,6 +379,7 @@ export class BaseLlmClient {
       },
       shouldRetryOnContent,
       'generateContent',
+      role,
     );
   }
 
@@ -372,6 +387,7 @@ export class BaseLlmClient {
     options: _CommonGenerateOptions,
     shouldRetryOnContent: (response: GenerateContentResponse) => boolean,
     errorContext: 'generateJson' | 'generateContent',
+    role: LlmRole = LlmRole.UTILITY_TOOL,
   ): Promise<GenerateContentResponse> {
     const {
       modelConfigKey,
@@ -424,7 +440,11 @@ export class BaseLlmClient {
           config: finalConfig,
           contents,
         };
-        return this.contentGenerator.generateContent(requestParams, promptId);
+        return this.contentGenerator.generateContent(
+          requestParams,
+          promptId,
+          role,
+        );
       };
 
       return await retryWithBackoff(apiCall, {

@@ -75,6 +75,7 @@ export interface CliArgs {
 
   yolo: boolean | undefined;
   approvalMode: string | undefined;
+  policy: string[] | undefined;
   allowedMcpServerNames: string[] | undefined;
   allowedTools: string[] | undefined;
   experimentalAcp: boolean | undefined;
@@ -158,6 +159,21 @@ export async function parseArguments(
           description:
             'Set the approval mode: default (prompt for approval), auto_edit (auto-approve edit tools), yolo (auto-approve all tools), plan (read-only mode)',
         })
+        .option('policy', {
+          type: 'array',
+          string: true,
+          nargs: 1,
+          description:
+            'Additional policy files or directories to load (comma-separated or multiple --policy)',
+          coerce: (policies: string[]) =>
+            // Handle comma-separated values
+            policies.flatMap((p) =>
+              p
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean),
+            ),
+        })
         .option('experimental-acp', {
           type: 'boolean',
           description: 'Starts the agent in ACP mode',
@@ -177,7 +193,8 @@ export async function parseArguments(
           type: 'array',
           string: true,
           nargs: 1,
-          description: 'Tools that are allowed to run without confirmation',
+          description:
+            '[DEPRECATED: Use Policy Engine instead See https://geminicli.com/docs/core/policy-engine] Tools that are allowed to run without confirmation',
           coerce: (tools: string[]) =>
             // Handle comma-separated values
             tools.flatMap((tool) => tool.split(',').map((t) => t.trim())),
@@ -437,6 +454,7 @@ export async function loadCliConfig(
   }
 
   const memoryImportFormat = settings.context?.importFormat || 'tree';
+  const includeDirectoryTree = settings.context?.includeDirectoryTree ?? true;
 
   const ideMode = settings.ide?.enabled ?? false;
 
@@ -669,6 +687,7 @@ export async function loadCliConfig(
       ...settings.mcp,
       allowed: argv.allowedMcpServerNames ?? settings.mcp?.allowed,
     },
+    policyPaths: argv.policy,
   };
 
   const policyEngineConfig = await createPolicyEngineConfig(
@@ -727,6 +746,7 @@ export async function loadCliConfig(
     embeddingModel: DEFAULT_GEMINI_EMBEDDING_MODEL,
     sandbox: sandboxConfig,
     targetDir: cwd,
+    includeDirectoryTree,
     includeDirectories,
     loadMemoryFromIncludeDirectories:
       settings.context?.loadMemoryFromIncludeDirectories || false,

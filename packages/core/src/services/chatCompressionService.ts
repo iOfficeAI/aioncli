@@ -32,6 +32,7 @@ import {
   PREVIEW_GEMINI_3_1_MODEL,
 } from '../config/models.js';
 import { PreCompressTrigger } from '../hooks/types.js';
+import { LlmRole } from '../telemetry/types.js';
 
 /**
  * Default threshold for compression token count as a fraction of the model's
@@ -341,6 +342,7 @@ export class ChatCompressionService {
       promptId,
       // TODO(joshualitt): wire up a sensible abort signal,
       abortSignal: abortSignal ?? new AbortController().signal,
+      role: LlmRole.UTILITY_COMPRESSOR,
     });
     const summary = getResponseText(summaryResponse) ?? '';
 
@@ -367,6 +369,7 @@ export class ChatCompressionService {
         ],
         systemInstruction: { text: getCompressionPrompt(config) },
         promptId: `${promptId}-verify`,
+        role: LlmRole.UTILITY_COMPRESSOR,
         abortSignal: abortSignal ?? new AbortController().signal,
       });
 
