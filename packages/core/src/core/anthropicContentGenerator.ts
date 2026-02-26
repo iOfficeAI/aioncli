@@ -17,6 +17,7 @@ import type {
 } from '@google/genai';
 import { GenerateContentResponse, FinishReason } from '@google/genai';
 import type { ContentGenerator } from './contentGenerator.js';
+import type { LlmRole } from '../telemetry/llmRole.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { toContents } from '../code_assist/converter.js';
 import type { Config } from '../config/config.js';
@@ -61,6 +62,7 @@ export class AnthropicContentGenerator implements ContentGenerator {
   async generateContent(
     request: GenerateContentParameters,
     _userPromptId: string,
+    _role?: LlmRole,
   ): Promise<GenerateContentResponse> {
     const { systemMessage, messages } = this.convertToAnthropicFormat(request);
 
@@ -92,6 +94,7 @@ export class AnthropicContentGenerator implements ContentGenerator {
   async generateContentStream(
     request: GenerateContentParameters,
     userPromptId: string,
+    _role?: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     // For now, use non-streaming API and wrap in generator
     // This ensures compatibility while we can improve streaming later

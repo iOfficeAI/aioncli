@@ -19,6 +19,7 @@
 - [十、附录：AionCLI 消息协议详解 (A2A Protocol)](#十附录aioncli-消息协议详解-a2a-protocol)
 - [十一、为什么选择 Gemini CLI 而非 Codex/Claude Code](#十一为什么选择-gemini-cli-而非-codexclaude-code)
 - [十二、Codex vs Gemini CLI 架构深度对比](#十二codex-vs-gemini-cli-架构深度对比)
+- [十三、上游合并记录](#十三上游合并记录)
 
 ---
 
@@ -1659,4 +1660,126 @@ type Part = TextPart | InlineDataPart | FunctionCallPart | ...;
 
 ---
 
-_文档更新时间：2025-12-15_
+## 十三、上游合并记录
+
+### v0.29.7 → v0.30.0 合并（2026-02-26）
+
+**合并分支**：`merge-upstream-latest`
+**上游版本**：google-gemini/gemini-cli v0.30.0（含 141 个 commit）
+
+#### 1. 上游 v0.30.0 主要变更
+
+**架构改进**：
+
+- **LlmRole 遥测系统**：`generateContent` / `generateContentStream` 接口新增第三个参数 `role: LlmRole`，用于区分不同场景的 LLM 调用（主聊天、工具调用、路由分类等），增强遥测数据粒度
+- **模型分类体系重构**：新增 `isCustomModel()` 和 `supportsModernFeatures()` 函数，取代原有 `isPreviewModel()`，支持非 Gemini 模型的特性检测
+- **CoreToolCallStatus 枚举**：替代原有字符串类型，为工具调用生命周期提供类型安全的状态管理
+- **SDK 包引入**：新增 `packages/sdk` 包，提供 Agent SDK 能力（`GeminiCliAgent` 等）
+
+**Plan Mode 增强**：
+
+- 5 阶段顺序规划工作流（`formalize 5-phase sequential planning workflow`）
+- 活动处理时自动从审批模式轮转中移除 Plan Mode
+- Plan 文件按 session 隔离，支持技能在 Plan Mode 中启用
+- `allowPlanMode` 取代 `isPlanEnabled` 控制审批模式循环
+
+**开发者体验**：
+
+- `getAuthTypeFromEnv()` 从 CLI 迁移至 Core 包，统一认证类型检测
+- `GEMINI_CLI=1` 环境变量自动注入 stdio MCP 服务器传输
+- 自定义推理模型默认支持（`support custom reasoning models by default`）
+- `/commands reload` 刷新自定义 TOML 命令
+- Ctrl-Z 进程挂起支持、Vim 模式增强
+
+**UI/UX 改进**：
+
+- Solarized Dark/Light 主题
+- 可搜索的设置列表（`generic searchable list`）
+- `AskUser` 工具多行文本输入、颜色方案对齐
+- 表格文字自动换行、Markdown 渲染优化
+- 终端能力查询包裹隐藏序列（修复闪烁问题）
+
+**安全与策略**：
+
+- `--policy` 标志支持用户自定义策略文件
+- 严格安全带配置（`strict seatbelt profiles`）
+- 弃用 `--allowed-tools` 和 `excludeTools`，迁移至策略引擎
+- 工具输出掩码默认启用
+
+#### 2. aioncli 冲突解决策略
+
+**总计冲突文件**：v0.29.7 合并 32 个 + v0.30.0 合并 22 个
+
+**保护文件（保留 aioncli 改动）**：
+
+| 文件 | 保护内容 | 处理方式 |
+|------|---------|---------|
+| `core/config/models.ts` | Bedrock 模型定义、区域验证 | 保留全部 + 接受上游 `isActiveModel()` |
+| `core/core/contentGenerator.ts` | `AuthType.USE_OPENAI/USE_BEDROCK`、`debugLogger` | 保留 + 接受 `LlmRole` 类型导入 |
+| `core/core/baseLlmClient.ts` | `generateJsonForOpenAI` 方法 | 新增 `role` 参数适配 |
+| `core/core/tokenLimits.ts` | 多模型 Token 上限映射 | 完整保留 |
+| `cli/validateNonInterActiveAuth.ts` | Bedrock/OpenAI 认证检测 | 保留本地 `getAuthTypeFromEnv()`，移除上游导入冲突 |
+| `core/prompts/promptProvider.ts` | - | 接受 `supportsModernFeatures` 替换 `isPreviewModel` |
+
+**适配性修改**：
+
+```typescript
+// baseLlmClient.ts - generateJsonForOpenAI 适配 LlmRole
+// 原有代码缺少第三个 role 参数
+const apiCall = () =>
+  this.contentGenerator.generateContent(
+    { model, config: requestConfig, contents },
+    promptId,
+    role,  // ← 新增，适配 v0.30.0 接口变更
+  );
+
+// validateNonInterActiveAuth.ts - 移除导入冲突
+// 上游将 getAuthTypeFromEnv 移至 core，但不含 Bedrock/OpenAI 检测
+// 保留本地扩展版本，改 AuthType 为值导入（非 type 导入）
+import { AuthType, debugLogger, OutputFormat, ExitCodes } from '@google/gemini-cli-core';
+// 本地函数包含 AWS_ACCESS_KEY_ID/AWS_PROFILE/OPENAI_API_KEY 检测
+```
+
+#### 3. 版本与依赖更新
+
+| 包名 | 版本 | 说明 |
+|------|------|------|
+| `@office-ai/aioncli-core` | 0.30.0 | 保持自定义包名 |
+| `@google/gemini-cli` | 0.30.0 | CLI 包 |
+| `@google/gemini-cli-a2a-server` | 0.30.0 | A2A 服务器 |
+| `@google/gemini-cli-sdk` | 0.30.0 | 新增 SDK 包 |
+| `@google/gemini-cli-test-utils` | 0.30.0 | 测试工具 |
+| `vscode-ide-companion` | 0.30.0 | VSCode 扩展 |
+
+**新增上游依赖**：`systeminformation`、`ws`（WebSocket）
+
+**保留 aioncli 依赖**：`@anthropic-ai/sdk`、`@aws-sdk/client-bedrock-runtime`、`tiktoken`
+
+#### 4. 测试验证结果
+
+| 包 | 文件数 | 用例数 | 结果 |
+|----|--------|--------|------|
+| core | 258 | 4935 | 251 passed / 7 failed（36 用例失败）|
+| cli | 376 | 5288 | 全部通过 |
+| sdk | 4 | 15 | 3 passed / 1 failed（预存问题）|
+| vscode | 3 | 41 | 全部通过 |
+
+**Core 残余失败分析**（均为预存问题，非本次合并引入）：
+
+- `oauth2.test.ts`（20 个）：keytar/keychain 环境依赖
+- `shell.test.ts`（8 个）：Shell 工具格式变更导致的描述不匹配
+- `mcp-client.test.ts`（4 个）：HTTP 传输 mock 不完整
+- `tokenLimits.test.ts`（2 个）：默认 Token 上限断言
+- `openaiContentGenerator.test.ts`（1 个）：OpenRouter 头信息
+- `turn.test.ts`（1 个）：错误事件报告
+
+#### 5. 合并后需注意的兼容性要点
+
+1. **LlmRole 传递**：所有调用 `contentGenerator.generateContent()` 的地方都需要传递第三个 `role` 参数，`openaiContentGenerator.ts` 中已有的调用点需要在后续维护中注意
+2. **supportsModernFeatures**：该函数对非 Gemini 模型（如 OpenAI/Claude）默认返回 `true`（通过 `isCustomModel` 判断），这与 aioncli 的多模型策略一致
+3. **getAuthTypeFromEnv 双重存在**：Core 包和 CLI 包各有一份，CLI 版本包含 Bedrock/OpenAI 扩展。后续可考虑统一至 Core 包
+4. **SDK 包**：新增的 `packages/sdk` 包暂未做 aioncli 适配，如需使用需要检查与 OpenAI 适配器的兼容性
+
+---
+
+_文档更新时间：2026-02-26_

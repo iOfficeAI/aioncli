@@ -130,8 +130,8 @@ describe('OpenAIContentGenerator', () => {
         maxRetries: 3,
         defaultHeaders: {
           'User-Agent': expect.stringMatching(/^QwenCode/),
-          'HTTP-Referer': 'https://github.com/QwenLM/qwen-code.git',
-          'X-Title': 'Qwen Code',
+          'HTTP-Referer': 'https://aionui.com',
+          'X-Title': 'AionUi',
         },
       });
     });
