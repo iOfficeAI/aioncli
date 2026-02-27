@@ -9,6 +9,7 @@ import { useCallback, useContext, useMemo, useState } from 'react';
 import { Box, Text } from 'ink';
 import {
   PREVIEW_GEMINI_MODEL,
+  PREVIEW_GEMINI_3_1_MODEL,
   PREVIEW_GEMINI_FLASH_MODEL,
   PREVIEW_GEMINI_MODEL_AUTO,
   DEFAULT_GEMINI_MODEL,
@@ -18,12 +19,14 @@ import {
   ModelSlashCommandEvent,
   logModelSlashCommand,
   getDisplayString,
+  AuthType,
+  PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL,
 } from '@google/gemini-cli-core';
 import { useKeypress } from '../hooks/useKeypress.js';
 import { theme } from '../semantic-colors.js';
 import { DescriptiveRadioButtonSelect } from './shared/DescriptiveRadioButtonSelect.js';
 import { ConfigContext } from '../contexts/ConfigContext.js';
-import { ThemedGradient } from './ThemedGradient.js';
+import { useSettings } from '../contexts/SettingsContext.js';
 
 interface ModelDialogProps {
   onClose: () => void;
@@ -31,14 +34,18 @@ interface ModelDialogProps {
 
 export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   const config = useContext(ConfigContext);
+  const settings = useSettings();
   const [view, setView] = useState<'main' | 'manual'>('main');
   const [persistMode, setPersistMode] = useState(false);
 
   // Determine the Preferred Model (read once when the dialog opens).
   const preferredModel = config?.getModel() || DEFAULT_GEMINI_MODEL_AUTO;
 
-  const shouldShowPreviewModels =
-    config?.getPreviewFeatures() && config.getHasAccessToPreviewModel();
+  const shouldShowPreviewModels = config?.getHasAccessToPreviewModel();
+  const useGemini31 = config?.getGemini31LaunchedSync?.() ?? false;
+  const selectedAuthType = settings.merged.security.auth.selectedType;
+  const useCustomToolModel =
+    useGemini31 && selectedAuthType === AuthType.USE_GEMINI;
 
   const manualModelSelected = useMemo(() => {
     const manualModels = [
@@ -46,6 +53,8 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
       DEFAULT_GEMINI_FLASH_MODEL,
       DEFAULT_GEMINI_FLASH_LITE_MODEL,
       PREVIEW_GEMINI_MODEL,
+      PREVIEW_GEMINI_3_1_MODEL,
+      PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL,
       PREVIEW_GEMINI_FLASH_MODEL,
     ];
     if (manualModels.includes(preferredModel)) {
@@ -62,10 +71,13 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
         } else {
           onClose();
         }
+        return true;
       }
       if (key.name === 'tab') {
         setPersistMode((prev) => !prev);
+        return true;
       }
+      return false;
     },
     { isActive: true },
   );
@@ -93,13 +105,14 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
       list.unshift({
         value: PREVIEW_GEMINI_MODEL_AUTO,
         title: getDisplayString(PREVIEW_GEMINI_MODEL_AUTO),
-        description:
-          'Let Gemini CLI decide the best model for the task: gemini-3-pro, gemini-3-flash',
+        description: useGemini31
+          ? 'Let Gemini CLI decide the best model for the task: gemini-3.1-pro, gemini-3-flash'
+          : 'Let Gemini CLI decide the best model for the task: gemini-3-pro, gemini-3-flash',
         key: PREVIEW_GEMINI_MODEL_AUTO,
       });
     }
     return list;
-  }, [shouldShowPreviewModels, manualModelSelected]);
+  }, [shouldShowPreviewModels, manualModelSelected, useGemini31]);
 
   const manualOptions = useMemo(() => {
     const list = [
@@ -121,11 +134,19 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     ];
 
     if (shouldShowPreviewModels) {
+      const previewProModel = useGemini31
+        ? PREVIEW_GEMINI_3_1_MODEL
+        : PREVIEW_GEMINI_MODEL;
+
+      const previewProValue = useCustomToolModel
+        ? PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL
+        : previewProModel;
+
       list.unshift(
         {
-          value: PREVIEW_GEMINI_MODEL,
-          title: PREVIEW_GEMINI_MODEL,
-          key: PREVIEW_GEMINI_MODEL,
+          value: previewProValue,
+          title: previewProModel,
+          key: previewProModel,
         },
         {
           value: PREVIEW_GEMINI_FLASH_MODEL,
@@ -135,7 +156,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
       );
     }
     return list;
-  }, [shouldShowPreviewModels]);
+  }, [shouldShowPreviewModels, useGemini31, useCustomToolModel]);
 
   const options = view === 'main' ? mainOptions : manualOptions;
 
@@ -170,24 +191,6 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     [config, onClose, persistMode],
   );
 
-  let header;
-  let subheader;
-
-  // Do not show any header or subheader since it's already showing preview model
-  // options
-  if (shouldShowPreviewModels) {
-    header = undefined;
-    subheader = undefined;
-    // When a user has the access but has not enabled the preview features.
-  } else if (config?.getHasAccessToPreviewModel()) {
-    header = 'Gemini 3 is now available.';
-    subheader =
-      'Enable "Preview features" in /settings.\nLearn more at https://goo.gle/enable-preview-features';
-  } else {
-    header = 'Gemini 3 is coming soon.';
-    subheader = undefined;
-  }
-
   return (
     <Box
       borderStyle="round"
@@ -198,16 +201,6 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     >
       <Text bold>Select Model</Text>
 
-      <Box flexDirection="column">
-        {header && (
-          <Box marginTop={1}>
-            <ThemedGradient>
-              <Text>{header}</Text>
-            </ThemedGradient>
-          </Box>
-        )}
-        {subheader && <Text>{subheader}</Text>}
-      </Box>
       <Box marginTop={1}>
         <DescriptiveRadioButtonSelect
           items={options}
@@ -221,7 +214,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
           <Text color={theme.text.primary}>
             Remember model for future sessions:{' '}
           </Text>
-          <Text color={theme.text.secondary}>
+          <Text color={theme.status.success}>
             {persistMode ? 'true' : 'false'}
           </Text>
         </Box>

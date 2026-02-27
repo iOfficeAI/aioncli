@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -11,6 +11,17 @@ import { createMockCommandContext } from '../../test-utils/mockCommandContext.js
 import { MessageType } from '../types.js';
 import { formatDuration } from '../utils/formatters.js';
 import type { Config } from '@google/gemini-cli-core';
+
+vi.mock('@google/gemini-cli-core', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@google/gemini-cli-core')>();
+  return {
+    ...actual,
+    UserAccountManager: vi.fn().mockImplementation(() => ({
+      getCachedGoogleAccount: vi.fn().mockReturnValue('mock@example.com'),
+    })),
+  };
+});
 
 describe('statsCommand', () => {
   let mockContext: CommandContext;
@@ -37,13 +48,14 @@ describe('statsCommand', () => {
     const expectedDuration = formatDuration(
       endTime.getTime() - startTime.getTime(),
     );
-    expect(mockContext.ui.addItem).toHaveBeenCalledWith(
-      {
-        type: MessageType.STATS,
-        duration: expectedDuration,
-      },
-      expect.any(Number),
-    );
+    expect(mockContext.ui.addItem).toHaveBeenCalledWith({
+      type: MessageType.STATS,
+      duration: expectedDuration,
+      selectedAuthType: '',
+      tier: undefined,
+      userEmail: 'mock@example.com',
+      currentModel: undefined,
+    });
   });
 
   it('should fetch and display quota if config is available', async () => {
@@ -51,8 +63,21 @@ describe('statsCommand', () => {
 
     const mockQuota = { buckets: [] };
     const mockRefreshUserQuota = vi.fn().mockResolvedValue(mockQuota);
+    const mockGetUserTierName = vi.fn().mockReturnValue('Basic');
+    const mockGetModel = vi.fn().mockReturnValue('gemini-pro');
+    const mockGetQuotaRemaining = vi.fn().mockReturnValue(85);
+    const mockGetQuotaLimit = vi.fn().mockReturnValue(100);
+    const mockGetQuotaResetTime = vi
+      .fn()
+      .mockReturnValue('2025-01-01T12:00:00Z');
+
     mockContext.services.config = {
       refreshUserQuota: mockRefreshUserQuota,
+      getUserTierName: mockGetUserTierName,
+      getModel: mockGetModel,
+      getQuotaRemaining: mockGetQuotaRemaining,
+      getQuotaLimit: mockGetQuotaLimit,
+      getQuotaResetTime: mockGetQuotaResetTime,
     } as unknown as Config;
 
     await statsCommand.action(mockContext, '');
@@ -61,8 +86,12 @@ describe('statsCommand', () => {
     expect(mockContext.ui.addItem).toHaveBeenCalledWith(
       expect.objectContaining({
         quotas: mockQuota,
+        tier: 'Basic',
+        currentModel: 'gemini-pro',
+        pooledRemaining: 85,
+        pooledLimit: 100,
+        pooledResetTime: '2025-01-01T12:00:00Z',
       }),
-      expect.any(Number),
     );
   });
 
@@ -75,12 +104,15 @@ describe('statsCommand', () => {
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     modelSubCommand.action(mockContext, '');
 
-    expect(mockContext.ui.addItem).toHaveBeenCalledWith(
-      {
-        type: MessageType.MODEL_STATS,
-      },
-      expect.any(Number),
-    );
+    expect(mockContext.ui.addItem).toHaveBeenCalledWith({
+      type: MessageType.MODEL_STATS,
+      selectedAuthType: '',
+      tier: undefined,
+      userEmail: 'mock@example.com',
+      currentModel: undefined,
+      pooledRemaining: undefined,
+      pooledLimit: undefined,
+    });
   });
 
   it('should display tool stats when using the "tools" subcommand', () => {
@@ -92,11 +124,8 @@ describe('statsCommand', () => {
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     toolsSubCommand.action(mockContext, '');
 
-    expect(mockContext.ui.addItem).toHaveBeenCalledWith(
-      {
-        type: MessageType.TOOL_STATS,
-      },
-      expect.any(Number),
-    );
+    expect(mockContext.ui.addItem).toHaveBeenCalledWith({
+      type: MessageType.TOOL_STATS,
+    });
   });
 });

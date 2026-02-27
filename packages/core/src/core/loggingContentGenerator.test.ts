@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -30,7 +30,8 @@ import type {
 import type { ContentGenerator } from './contentGenerator.js';
 import { LoggingContentGenerator } from './loggingContentGenerator.js';
 import type { Config } from '../config/config.js';
-import { ApiRequestEvent } from '../telemetry/types.js';
+import { UserTierId } from '../code_assist/types.js';
+import { ApiRequestEvent, LlmRole } from '../telemetry/types.js';
 
 describe('LoggingContentGenerator', () => {
   let wrapped: ContentGenerator;
@@ -50,6 +51,7 @@ describe('LoggingContentGenerator', () => {
       getContentGeneratorConfig: vi.fn().mockReturnValue({
         authType: 'API_KEY',
       }),
+      refreshUserQuotaIfStale: vi.fn().mockResolvedValue(undefined),
     } as unknown as Config;
     loggingContentGenerator = new LoggingContentGenerator(wrapped, config);
     vi.useFakeTimers();
@@ -87,13 +89,18 @@ describe('LoggingContentGenerator', () => {
       const promise = loggingContentGenerator.generateContent(
         req,
         userPromptId,
+        LlmRole.MAIN,
       );
 
       vi.advanceTimersByTime(1000);
 
       await promise;
 
-      expect(wrapped.generateContent).toHaveBeenCalledWith(req, userPromptId);
+      expect(wrapped.generateContent).toHaveBeenCalledWith(
+        req,
+        userPromptId,
+        LlmRole.MAIN,
+      );
       expect(logApiRequest).toHaveBeenCalledWith(
         config,
         expect.any(ApiRequestEvent),
@@ -116,6 +123,7 @@ describe('LoggingContentGenerator', () => {
       const promise = loggingContentGenerator.generateContent(
         req,
         userPromptId,
+        LlmRole.MAIN,
       );
 
       vi.advanceTimersByTime(1000);
@@ -154,12 +162,17 @@ describe('LoggingContentGenerator', () => {
       vi.mocked(wrapped.generateContentStream).mockResolvedValue(
         createAsyncGenerator(),
       );
+
       const startTime = new Date('2025-01-01T00:00:00.000Z');
+
       vi.setSystemTime(startTime);
 
       const stream = await loggingContentGenerator.generateContentStream(
         req,
+
         userPromptId,
+
+        LlmRole.MAIN,
       );
 
       vi.advanceTimersByTime(1000);
@@ -171,6 +184,7 @@ describe('LoggingContentGenerator', () => {
       expect(wrapped.generateContentStream).toHaveBeenCalledWith(
         req,
         userPromptId,
+        LlmRole.MAIN,
       );
       expect(logApiRequest).toHaveBeenCalledWith(
         config,
@@ -201,6 +215,7 @@ describe('LoggingContentGenerator', () => {
       const stream = await loggingContentGenerator.generateContentStream(
         req,
         userPromptId,
+        LlmRole.MAIN,
       );
 
       vi.advanceTimersByTime(1000);
@@ -217,6 +232,56 @@ describe('LoggingContentGenerator', () => {
       );
       const errorEvent = vi.mocked(logApiError).mock.calls[0][1];
       expect(errorEvent.duration_ms).toBe(1000);
+    });
+
+    it('should set latest API request in config for main agent requests', async () => {
+      const req = {
+        contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+        model: 'gemini-pro',
+      };
+      // Main agent prompt IDs end with exactly 8 hashes and a turn counter
+      const mainAgentPromptId = 'session-uuid########1';
+      config.setLatestApiRequest = vi.fn();
+
+      async function* createAsyncGenerator() {
+        yield { candidates: [] } as unknown as GenerateContentResponse;
+      }
+      vi.mocked(wrapped.generateContentStream).mockResolvedValue(
+        createAsyncGenerator(),
+      );
+
+      await loggingContentGenerator.generateContentStream(
+        req,
+        mainAgentPromptId,
+        LlmRole.MAIN,
+      );
+
+      expect(config.setLatestApiRequest).toHaveBeenCalledWith(req);
+    });
+
+    it('should NOT set latest API request in config for sub-agent requests', async () => {
+      const req = {
+        contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+        model: 'gemini-pro',
+      };
+      // Sub-agent prompt IDs contain fewer hashes, typically separating the agent name and ID
+      const subAgentPromptId = 'codebase_investigator#12345';
+      config.setLatestApiRequest = vi.fn();
+
+      async function* createAsyncGenerator() {
+        yield { candidates: [] } as unknown as GenerateContentResponse;
+      }
+      vi.mocked(wrapped.generateContentStream).mockResolvedValue(
+        createAsyncGenerator(),
+      );
+
+      await loggingContentGenerator.generateContentStream(
+        req,
+        subAgentPromptId,
+        LlmRole.SUBAGENT,
+      );
+
+      expect(config.setLatestApiRequest).not.toHaveBeenCalled();
     });
   });
 
@@ -252,6 +317,18 @@ describe('LoggingContentGenerator', () => {
 
       expect(wrapped.embedContent).toHaveBeenCalledWith(req);
       expect(result).toBe(response);
+    });
+  });
+
+  describe('delegation', () => {
+    it('should delegate userTier to wrapped', () => {
+      wrapped.userTier = UserTierId.STANDARD;
+      expect(loggingContentGenerator.userTier).toBe(UserTierId.STANDARD);
+    });
+
+    it('should delegate userTierName to wrapped', () => {
+      wrapped.userTierName = 'Standard Tier';
+      expect(loggingContentGenerator.userTierName).toBe('Standard Tier');
     });
   });
 });

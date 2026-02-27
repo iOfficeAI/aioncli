@@ -96,11 +96,14 @@ their corresponding top-level category object in your `settings.json` file.
 
 <!-- SETTINGS-AUTOGEN:START -->
 
-#### `general`
+#### `policyPaths`
 
-- **`general.previewFeatures`** (boolean):
-  - **Description:** Enable preview features (e.g., preview models).
-  - **Default:** `false`
+- **`policyPaths`** (array):
+  - **Description:** Additional policy files or directories to load.
+  - **Default:** `[]`
+  - **Requires restart:** Yes
+
+#### `general`
 
 - **`general.preferredEditor`** (string):
   - **Description:** The preferred editor to open files in.
@@ -110,13 +113,24 @@ their corresponding top-level category object in your `settings.json` file.
   - **Description:** Enable Vim keybindings
   - **Default:** `false`
 
-- **`general.disableAutoUpdate`** (boolean):
-  - **Description:** Disable automatic updates
+- **`general.defaultApprovalMode`** (enum):
+  - **Description:** The default approval mode for tool execution. 'default'
+    prompts for approval, 'auto_edit' auto-approves edit tools, and 'plan' is
+    read-only mode. 'yolo' is not supported yet.
+  - **Default:** `"default"`
+  - **Values:** `"default"`, `"auto_edit"`, `"plan"`
+
+- **`general.devtools`** (boolean):
+  - **Description:** Enable DevTools inspector on launch.
   - **Default:** `false`
 
-- **`general.disableUpdateNag`** (boolean):
-  - **Description:** Disable update notification prompts.
-  - **Default:** `false`
+- **`general.enableAutoUpdate`** (boolean):
+  - **Description:** Enable automatic updates.
+  - **Default:** `true`
+
+- **`general.enableAutoUpdateNotification`** (boolean):
+  - **Description:** Enable update notification prompts.
+  - **Default:** `true`
 
 - **`general.checkpointing.enabled`** (boolean):
   - **Description:** Enable session checkpointing for recovery
@@ -143,8 +157,8 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `false`
 
 - **`general.sessionRetention.maxAge`** (string):
-  - **Description:** Maximum age of sessions to keep (e.g., "30d", "7d", "24h",
-    "1w")
+  - **Description:** Automatically delete chats older than this time period
+    (e.g., "30d", "7d", "24h", "1w")
   - **Default:** `undefined`
 
 - **`general.sessionRetention.maxCount`** (number):
@@ -156,10 +170,15 @@ their corresponding top-level category object in your `settings.json` file.
   - **Description:** Minimum retention period (safety limit, defaults to "1d")
   - **Default:** `"1d"`
 
+- **`general.sessionRetention.warningAcknowledged`** (boolean):
+  - **Description:** INTERNAL: Whether the user has acknowledged the session
+    retention warning
+  - **Default:** `false`
+
 #### `output`
 
 - **`output.format`** (enum):
-  - **Description:** The format of the CLI output.
+  - **Description:** The format of the CLI output. Can be `text` or `json`.
   - **Default:** `"text"`
   - **Values:** `"text"`, `"json"`
 
@@ -170,6 +189,15 @@ their corresponding top-level category object in your `settings.json` file.
     available options.
   - **Default:** `undefined`
 
+- **`ui.autoThemeSwitching`** (boolean):
+  - **Description:** Automatically switch between default light and dark themes
+    based on terminal background color.
+  - **Default:** `true`
+
+- **`ui.terminalBackgroundPollingInterval`** (number):
+  - **Description:** Interval in seconds to poll the terminal background color.
+  - **Default:** `60`
+
 - **`ui.customThemes`** (object):
   - **Description:** Custom theme definitions.
   - **Default:** `{}`
@@ -179,14 +207,34 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `false`
   - **Requires restart:** Yes
 
+- **`ui.inlineThinkingMode`** (enum):
+  - **Description:** Display model thinking inline: off or full.
+  - **Default:** `"off"`
+  - **Values:** `"off"`, `"full"`
+
 - **`ui.showStatusInTitle`** (boolean):
-  - **Description:** Show Gemini CLI status and thoughts in the terminal window
-    title
+  - **Description:** Show Gemini CLI model thoughts in the terminal window title
+    during the working phase
   - **Default:** `false`
+
+- **`ui.dynamicWindowTitle`** (boolean):
+  - **Description:** Update the terminal window title with current status icons
+    (Ready: ◇, Action Required: ✋, Working: ✦)
+  - **Default:** `true`
+
+- **`ui.showHomeDirectoryWarning`** (boolean):
+  - **Description:** Show a warning when running Gemini CLI in the home
+    directory.
+  - **Default:** `true`
+  - **Requires restart:** Yes
 
 - **`ui.hideTips`** (boolean):
   - **Description:** Hide helpful tips in the UI
   - **Default:** `false`
+
+- **`ui.showShortcutsHint`** (boolean):
+  - **Description:** Show the "? for shortcuts" hint above the input.
+  - **Default:** `true`
 
 - **`ui.hideBanner`** (boolean):
   - **Description:** Hide the application banner
@@ -233,8 +281,8 @@ their corresponding top-level category object in your `settings.json` file.
   - **Description:** Show the model name in the chat for each model turn.
   - **Default:** `false`
 
-- **`ui.useFullWidth`** (boolean):
-  - **Description:** Use the entire width of the terminal for output.
+- **`ui.showUserIdentity`** (boolean):
+  - **Description:** Show the logged-in user's identity (e.g. email) in the UI.
   - **Default:** `true`
 
 - **`ui.useAlternateBuffer`** (boolean):
@@ -243,6 +291,10 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `false`
   - **Requires restart:** Yes
 
+- **`ui.useBackgroundColor`** (boolean):
+  - **Description:** Whether to use background colors in the UI.
+  - **Default:** `true`
+
 - **`ui.incrementalRendering`** (boolean):
   - **Description:** Enable incremental rendering for the UI. This option will
     reduce flickering but may cause rendering artifacts. Only supported when
@@ -250,14 +302,18 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `true`
   - **Requires restart:** Yes
 
+- **`ui.showSpinner`** (boolean):
+  - **Description:** Show the spinner during operations.
+  - **Default:** `true`
+
 - **`ui.customWittyPhrases`** (array):
   - **Description:** Custom witty phrases to display during loading. When
     provided, the CLI cycles through these instead of the defaults.
   - **Default:** `[]`
 
-- **`ui.accessibility.disableLoadingPhrases`** (boolean):
-  - **Description:** Disable loading phrases for accessibility
-  - **Default:** `false`
+- **`ui.accessibility.enableLoadingPhrases`** (boolean):
+  - **Description:** Enable loading phrases during operations.
+  - **Default:** `true`
   - **Requires restart:** Yes
 
 - **`ui.accessibility.screenReader`** (boolean):
@@ -269,7 +325,7 @@ their corresponding top-level category object in your `settings.json` file.
 #### `ide`
 
 - **`ide.enabled`** (boolean):
-  - **Description:** Enable IDE integration mode
+  - **Description:** Enable IDE integration mode.
   - **Default:** `false`
   - **Requires restart:** Yes
 
@@ -305,6 +361,12 @@ their corresponding top-level category object in your `settings.json` file.
   - **Description:** The fraction of context usage at which to trigger context
     compression (e.g. 0.2, 0.3).
   - **Default:** `0.5`
+  - **Requires restart:** Yes
+
+- **`model.disableLoopDetection`** (boolean):
+  - **Description:** Disable automatic detection and prevention of infinite
+    loops.
+  - **Default:** `false`
   - **Requires restart:** Yes
 
 - **`model.skipNextSpeakerCheck`** (boolean):
@@ -397,6 +459,12 @@ their corresponding top-level category object in your `settings.json` file.
           "model": "gemini-2.5-flash"
         }
       },
+      "gemini-3-flash-base": {
+        "extends": "base",
+        "modelConfig": {
+          "model": "gemini-3-flash-preview"
+        }
+      },
       "classifier": {
         "extends": "base",
         "modelConfig": {
@@ -416,6 +484,19 @@ their corresponding top-level category object in your `settings.json` file.
           "generateContentConfig": {
             "temperature": 0.3,
             "maxOutputTokens": 16000,
+            "thinkingConfig": {
+              "thinkingBudget": 0
+            }
+          }
+        }
+      },
+      "fast-ack-helper": {
+        "extends": "base",
+        "modelConfig": {
+          "model": "gemini-2.5-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 120,
             "thinkingConfig": {
               "thinkingBudget": 0
             }
@@ -452,7 +533,7 @@ their corresponding top-level category object in your `settings.json` file.
         }
       },
       "web-search": {
-        "extends": "gemini-2.5-flash-base",
+        "extends": "gemini-3-flash-base",
         "modelConfig": {
           "generateContentConfig": {
             "tools": [
@@ -464,7 +545,7 @@ their corresponding top-level category object in your `settings.json` file.
         }
       },
       "web-fetch": {
-        "extends": "gemini-2.5-flash-base",
+        "extends": "gemini-3-flash-base",
         "modelConfig": {
           "generateContentConfig": {
             "tools": [
@@ -476,25 +557,25 @@ their corresponding top-level category object in your `settings.json` file.
         }
       },
       "web-fetch-fallback": {
-        "extends": "gemini-2.5-flash-base",
+        "extends": "gemini-3-flash-base",
         "modelConfig": {}
       },
       "loop-detection": {
-        "extends": "gemini-2.5-flash-base",
+        "extends": "gemini-3-flash-base",
         "modelConfig": {}
       },
       "loop-detection-double-check": {
         "extends": "base",
         "modelConfig": {
-          "model": "gemini-2.5-pro"
+          "model": "gemini-3-pro-preview"
         }
       },
       "llm-edit-fixer": {
-        "extends": "gemini-2.5-flash-base",
+        "extends": "gemini-3-flash-base",
         "modelConfig": {}
       },
       "next-speaker-checker": {
-        "extends": "gemini-2.5-flash-base",
+        "extends": "gemini-3-flash-base",
         "modelConfig": {}
       },
       "chat-compression-3-pro": {
@@ -524,7 +605,7 @@ their corresponding top-level category object in your `settings.json` file.
       },
       "chat-compression-default": {
         "modelConfig": {
-          "model": "gemini-2.5-pro"
+          "model": "gemini-3-pro-preview"
         }
       }
     }
@@ -546,6 +627,14 @@ their corresponding top-level category object in your `settings.json` file.
     used.
   - **Default:** `[]`
 
+#### `agents`
+
+- **`agents.overrides`** (object):
+  - **Description:** Override settings for specific agents, e.g. to disable the
+    agent, set a custom model config, or run config.
+  - **Default:** `{}`
+  - **Requires restart:** Yes
+
 #### `context`
 
 - **`context.fileName`** (string | string[]):
@@ -556,6 +645,11 @@ their corresponding top-level category object in your `settings.json` file.
 - **`context.importFormat`** (string):
   - **Description:** The format to use when importing memory.
   - **Default:** `undefined`
+
+- **`context.includeDirectoryTree`** (boolean):
+  - **Description:** Whether to include the directory tree of the current
+    working directory in the initial request to the model.
+  - **Default:** `true`
 
 - **`context.discoveryMaxDirs`** (number):
   - **Description:** Maximum number of directories to search for memory.
@@ -573,12 +667,12 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `false`
 
 - **`context.fileFiltering.respectGitIgnore`** (boolean):
-  - **Description:** Respect .gitignore files when searching
+  - **Description:** Respect .gitignore files when searching.
   - **Default:** `true`
   - **Requires restart:** Yes
 
 - **`context.fileFiltering.respectGeminiIgnore`** (boolean):
-  - **Description:** Respect .geminiignore files when searching
+  - **Description:** Respect .geminiignore files when searching.
   - **Default:** `true`
   - **Requires restart:** Yes
 
@@ -588,9 +682,17 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `true`
   - **Requires restart:** Yes
 
-- **`context.fileFiltering.disableFuzzySearch`** (boolean):
-  - **Description:** Disable fuzzy search when searching for files.
-  - **Default:** `false`
+- **`context.fileFiltering.enableFuzzySearch`** (boolean):
+  - **Description:** Enable fuzzy search when searching for files.
+  - **Default:** `true`
+  - **Requires restart:** Yes
+
+- **`context.fileFiltering.customIgnoreFilePaths`** (array):
+  - **Description:** Additional ignore file paths to respect. These files take
+    precedence over .geminiignore and .gitignore. Files earlier in the array
+    take precedence over files later in the array, e.g. the first file takes
+    precedence over the second one.
+  - **Default:** `[]`
   - **Requires restart:** Yes
 
 #### `tools`
@@ -625,11 +727,6 @@ their corresponding top-level category object in your `settings.json` file.
   - **Description:** Enable shell output efficiency optimizations for better
     performance.
   - **Default:** `true`
-
-- **`tools.autoAccept`** (boolean):
-  - **Description:** Automatically accept and execute tool calls that are
-    considered safe (e.g., read-only operations).
-  - **Default:** `false`
 
 - **`tools.core`** (array):
   - **Description:** Restrict the set of built-in tools with an allowlist. Match
@@ -668,25 +765,16 @@ their corresponding top-level category object in your `settings.json` file.
     implementation. Provides faster search performance.
   - **Default:** `true`
 
-- **`tools.enableToolOutputTruncation`** (boolean):
-  - **Description:** Enable truncation of large tool outputs.
-  - **Default:** `true`
-  - **Requires restart:** Yes
-
 - **`tools.truncateToolOutputThreshold`** (number):
-  - **Description:** Truncate tool output if it is larger than this many
-    characters. Set to -1 to disable.
-  - **Default:** `4000000`
+  - **Description:** Maximum characters to show when truncating large tool
+    outputs. Set to 0 or negative to disable truncation.
+  - **Default:** `40000`
   - **Requires restart:** Yes
 
-- **`tools.truncateToolOutputLines`** (number):
-  - **Description:** The number of lines to keep when truncating tool output.
-  - **Default:** `1000`
-  - **Requires restart:** Yes
-
-- **`tools.enableHooks`** (boolean):
-  - **Description:** Enables the hooks system experiment. When disabled, the
-    hooks system is completely deactivated regardless of other settings.
+- **`tools.disableLLMCorrection`** (boolean):
+  - **Description:** Disable LLM-based error correction for edit tools. When
+    enabled, tools will fail immediately if exact string matches are not found,
+    instead of attempting to self-correct.
   - **Default:** `true`
   - **Requires restart:** Yes
 
@@ -730,9 +818,16 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `false`
   - **Requires restart:** Yes
 
+- **`security.allowedExtensions`** (array):
+  - **Description:** List of Regex patterns for allowed extensions. If nonempty,
+    only extensions that match the patterns in this list are allowed. Overrides
+    the blockGitExtensions setting.
+  - **Default:** `[]`
+  - **Requires restart:** Yes
+
 - **`security.folderTrust.enabled`** (boolean):
   - **Description:** Setting to track whether Folder trust is enabled.
-  - **Default:** `false`
+  - **Default:** `true`
   - **Requires restart:** Yes
 
 - **`security.environmentVariableRedaction.allowed`** (array):
@@ -793,6 +888,28 @@ their corresponding top-level category object in your `settings.json` file.
 
 #### `experimental`
 
+- **`experimental.toolOutputMasking.enabled`** (boolean):
+  - **Description:** Enables tool output masking to save tokens.
+  - **Default:** `true`
+  - **Requires restart:** Yes
+
+- **`experimental.toolOutputMasking.toolProtectionThreshold`** (number):
+  - **Description:** Minimum number of tokens to protect from masking (most
+    recent tool outputs).
+  - **Default:** `50000`
+  - **Requires restart:** Yes
+
+- **`experimental.toolOutputMasking.minPrunableTokensThreshold`** (number):
+  - **Description:** Minimum prunable tokens required to trigger a masking pass.
+  - **Default:** `30000`
+  - **Requires restart:** Yes
+
+- **`experimental.toolOutputMasking.protectLatestTurn`** (boolean):
+  - **Description:** Ensures the absolute latest turn is never masked,
+    regardless of token count.
+  - **Default:** `true`
+  - **Requires restart:** Yes
+
 - **`experimental.enableAgents`** (boolean):
   - **Description:** Enable local and remote subagents. Warning: Experimental
     feature, uses YOLO mode for subagents
@@ -802,6 +919,16 @@ their corresponding top-level category object in your `settings.json` file.
 - **`experimental.extensionManagement`** (boolean):
   - **Description:** Enable extension management features.
   - **Default:** `true`
+  - **Requires restart:** Yes
+
+- **`experimental.extensionConfig`** (boolean):
+  - **Description:** Enable requesting and fetching of extension settings.
+  - **Default:** `true`
+  - **Requires restart:** Yes
+
+- **`experimental.extensionRegistry`** (boolean):
+  - **Description:** Enable extension registry explore UI.
+  - **Default:** `false`
   - **Requires restart:** Yes
 
 - **`experimental.extensionReloading`** (boolean):
@@ -814,70 +941,46 @@ their corresponding top-level category object in your `settings.json` file.
   - **Default:** `false`
   - **Requires restart:** Yes
 
-- **`experimental.skills`** (boolean):
-  - **Description:** Enable Agent Skills (experimental).
-  - **Default:** `false`
-  - **Requires restart:** Yes
-
-- **`experimental.codebaseInvestigatorSettings.enabled`** (boolean):
-  - **Description:** Enable the Codebase Investigator agent.
-  - **Default:** `true`
-  - **Requires restart:** Yes
-
-- **`experimental.codebaseInvestigatorSettings.maxNumTurns`** (number):
-  - **Description:** Maximum number of turns for the Codebase Investigator
-    agent.
-  - **Default:** `10`
-  - **Requires restart:** Yes
-
-- **`experimental.codebaseInvestigatorSettings.maxTimeMinutes`** (number):
-  - **Description:** Maximum time for the Codebase Investigator agent (in
-    minutes).
-  - **Default:** `3`
-  - **Requires restart:** Yes
-
-- **`experimental.codebaseInvestigatorSettings.thinkingBudget`** (number):
-  - **Description:** The thinking budget for the Codebase Investigator agent.
-  - **Default:** `8192`
-  - **Requires restart:** Yes
-
-- **`experimental.codebaseInvestigatorSettings.model`** (string):
-  - **Description:** The model to use for the Codebase Investigator agent.
-  - **Default:** `"auto"`
-  - **Requires restart:** Yes
-
 - **`experimental.useOSC52Paste`** (boolean):
   - **Description:** Use OSC 52 sequence for pasting instead of clipboardy
     (useful for remote sessions).
   - **Default:** `false`
 
-- **`experimental.introspectionAgentSettings.enabled`** (boolean):
-  - **Description:** Enable the Introspection Agent.
+- **`experimental.plan`** (boolean):
+  - **Description:** Enable planning features (Plan Mode and tools).
   - **Default:** `false`
   - **Requires restart:** Yes
 
 #### `skills`
+
+- **`skills.enabled`** (boolean):
+  - **Description:** Enable Agent Skills.
+  - **Default:** `true`
+  - **Requires restart:** Yes
 
 - **`skills.disabled`** (array):
   - **Description:** List of disabled skills.
   - **Default:** `[]`
   - **Requires restart:** Yes
 
-#### `hooks`
+#### `hooksConfig`
 
-- **`hooks.enabled`** (boolean):
+- **`hooksConfig.enabled`** (boolean):
   - **Description:** Canonical toggle for the hooks system. When disabled, no
     hooks will be executed.
-  - **Default:** `false`
+  - **Default:** `true`
+  - **Requires restart:** Yes
 
-- **`hooks.disabled`** (array):
+- **`hooksConfig.disabled`** (array):
   - **Description:** List of hook names (commands) that should be disabled.
     Hooks in this list will not execute even if configured.
   - **Default:** `[]`
 
-- **`hooks.notifications`** (boolean):
+- **`hooksConfig.notifications`** (boolean):
   - **Description:** Show visual indicators when hooks are executing.
   - **Default:** `true`
+
+#### `hooks`
 
 - **`hooks.BeforeTool`** (array):
   - **Description:** Hooks that execute before tool execution. Can intercept,
@@ -947,6 +1050,14 @@ their corresponding top-level category object in your `settings.json` file.
 
 - **`admin.mcp.enabled`** (boolean):
   - **Description:** If false, disallows MCP servers from being used.
+  - **Default:** `true`
+
+- **`admin.mcp.config`** (object):
+  - **Description:** Admin-configured MCP servers.
+  - **Default:** `{}`
+
+- **`admin.skills.enabled`** (boolean):
+  - **Description:** If false, disallows agent skills from being used.
   - **Default:** `true`
   <!-- SETTINGS-AUTOGEN:END -->
 
@@ -1125,7 +1236,14 @@ the `advanced.excludedEnvVars` setting in your `settings.json` file.
 - **`GEMINI_MODEL`**:
   - Specifies the default Gemini model to use.
   - Overrides the hardcoded default
-  - Example: `export GEMINI_MODEL="gemini-2.5-flash"`
+  - Example: `export GEMINI_MODEL="gemini-3-flash-preview"`
+- **`GEMINI_CLI_HOME`**:
+  - Specifies the root directory for Gemini CLI's user-level configuration and
+    storage.
+  - By default, this is the user's system home directory. The CLI will create a
+    `.gemini` folder inside this directory.
+  - Useful for shared compute environments or keeping CLI state isolated.
+  - Example: `export GEMINI_CLI_HOME="/path/to/user/config"`
 - **`GOOGLE_API_KEY`**:
   - Your Google Cloud API key.
   - Required for using Vertex AI in express mode.
@@ -1146,6 +1264,10 @@ the `advanced.excludedEnvVars` setting in your `settings.json` file.
   - **Description:** The path to your Google Application Credentials JSON file.
   - **Example:**
     `export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/credentials.json"`
+- **`GOOGLE_GENAI_API_VERSION`**:
+  - Specifies the API version to use for Gemini API requests.
+  - When set, overrides the default API version used by the SDK.
+  - Example: `export GOOGLE_GENAI_API_VERSION="v1"`
 - **`OTLP_GOOGLE_CLOUD_PROJECT`**:
   - Your Google Cloud Project ID for Telemetry in Google Cloud
   - Example: `export OTLP_GOOGLE_CLOUD_PROJECT="YOUR_PROJECT_ID"`.
@@ -1198,7 +1320,10 @@ the `advanced.excludedEnvVars` setting in your `settings.json` file.
     few other folders, see
     `packages/cli/src/utils/sandbox-macos-permissive-open.sb`) but allows other
     operations.
-  - `strict`: Uses a strict profile that declines operations by default.
+  - `restrictive-open`: Declines operations by default, allows network.
+  - `strict-open`: Restricts both reads and writes to the working directory,
+    allows network.
+  - `strict-proxied`: Same as `strict-open` but routes network through proxy.
   - `<profile_name>`: Uses a custom profile. To define a custom profile, create
     a file named `sandbox-macos-<profile_name>.sb` in your project's `.gemini/`
     directory (e.g., `my-project/.gemini/sandbox-macos-custom.sb`).
@@ -1270,12 +1395,11 @@ for that specific session.
 
 - **`--model <model_name>`** (**`-m <model_name>`**):
   - Specifies the Gemini model to use for this session.
-  - Example: `npm start -- --model gemini-1.5-pro-latest`
+  - Example: `npm start -- --model gemini-3-pro-preview`
 - **`--prompt <your_prompt>`** (**`-p <your_prompt>`**):
+  - **Deprecated:** Use positional arguments instead.
   - Used to pass a prompt directly to the command. This invokes Gemini CLI in a
     non-interactive mode.
-  - For scripting examples, use the `--output-format json` flag to get
-    structured output.
 - **`--prompt-interactive <your_prompt>`** (**`-i <your_prompt>`**):
   - Starts an interactive session with the provided prompt as the initial input.
   - The prompt is processed within the interactive session, not before it.
@@ -1293,7 +1417,8 @@ for that specific session.
 - **`--sandbox`** (**`-s`**):
   - Enables sandbox mode for this session.
 - **`--debug`** (**`-d`**):
-  - Enables debug mode for this session, providing more verbose output.
+  - Enables debug mode for this session, providing more verbose output. Open the
+    debug console with F12 to see the additional logging.
 
 - **`--help`** (or **`-h`**):
   - Displays help information about command-line arguments.
@@ -1305,6 +1430,10 @@ for that specific session.
     - `auto_edit`: Automatically approve edit tools (replace, write_file) while
       prompting for others
     - `yolo`: Automatically approve all tool calls (equivalent to `--yolo`)
+    - `plan`: Read-only mode for tool calls (requires experimental planning to
+      be enabled).
+      > **Note:** This mode is currently under development and not yet fully
+      > functional.
   - Cannot be used together with `--yolo`. Use `--approval-mode=yolo` instead of
     `--yolo` for the new unified approach.
   - Example: `gemini --approval-mode auto_edit`

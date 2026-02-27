@@ -11,13 +11,14 @@ import { loadCliConfig, type CliArgs } from '../../config/config.js';
 import { exitCli } from '../utils.js';
 import chalk from 'chalk';
 
-export async function handleList() {
+export async function handleList(args: { all?: boolean }) {
   const workspaceDir = process.cwd();
   const settings = loadSettings(workspaceDir);
 
   const config = await loadCliConfig(
     settings.merged,
     'skills-list-session',
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     {
       debug: false,
     } as Partial<CliArgs> as CliArgs,
@@ -28,7 +29,17 @@ export async function handleList() {
   await config.initialize();
 
   const skillManager = config.getSkillManager();
-  const skills = skillManager.getAllSkills();
+  const skills = args.all
+    ? skillManager.getAllSkills()
+    : skillManager.getAllSkills().filter((s) => !s.isBuiltin);
+
+  // Sort skills: non-built-in first, then alphabetically by name
+  skills.sort((a, b) => {
+    if (a.isBuiltin === b.isBuiltin) {
+      return a.name.localeCompare(b.name);
+    }
+    return a.isBuiltin ? 1 : -1;
+  });
 
   if (skills.length === 0) {
     debugLogger.log('No skills discovered.');
@@ -43,7 +54,9 @@ export async function handleList() {
       ? chalk.red('[Disabled]')
       : chalk.green('[Enabled]');
 
-    debugLogger.log(`${chalk.bold(skill.name)} ${status}`);
+    const builtinSuffix = skill.isBuiltin ? chalk.gray(' [Built-in]') : '';
+
+    debugLogger.log(`${chalk.bold(skill.name)} ${status}${builtinSuffix}`);
     debugLogger.log(`  Description: ${skill.description}`);
     debugLogger.log(`  Location:    ${skill.location}`);
     debugLogger.log('');
@@ -51,11 +64,17 @@ export async function handleList() {
 }
 
 export const listCommand: CommandModule = {
-  command: 'list',
+  command: 'list [--all]',
   describe: 'Lists discovered agent skills.',
-  builder: (yargs) => yargs,
-  handler: async () => {
-    await handleList();
+  builder: (yargs) =>
+    yargs.option('all', {
+      type: 'boolean',
+      description: 'Show all skills, including built-in ones.',
+      default: false,
+    }),
+  handler: async (argv) => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    await handleList({ all: argv['all'] as boolean });
     await exitCli();
   },
 };

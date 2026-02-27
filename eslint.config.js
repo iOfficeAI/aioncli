@@ -23,6 +23,7 @@ const __dirname = path.dirname(__filename);
 
 // Determine the monorepo root (assuming eslint.config.js is at the root)
 const projectRoot = __dirname;
+const currentYear = new Date().getFullYear();
 
 export default tseslint.config(
   {
@@ -35,6 +36,8 @@ export default tseslint.config(
       'package/bundle/**',
       '.integration-tests/**',
       'dist/**',
+      'evals/**',
+      'packages/test-utils/**',
     ],
   },
   eslint.configs.recommended,
@@ -169,6 +172,46 @@ export default tseslint.config(
       '@typescript-eslint/await-thenable': ['error'],
       '@typescript-eslint/no-floating-promises': ['error'],
       '@typescript-eslint/no-unnecessary-type-assertion': ['error'],
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'node:os',
+              importNames: ['homedir', 'tmpdir'],
+              message:
+                'Please use the helpers from @google/gemini-cli-core instead of node:os homedir()/tmpdir() to ensure strict environment isolation.',
+            },
+            {
+              name: 'os',
+              importNames: ['homedir', 'tmpdir'],
+              message:
+                'Please use the helpers from @google/gemini-cli-core instead of os homedir()/tmpdir() to ensure strict environment isolation.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Rules that only apply to product code
+    files: ['packages/*/src/**/*.{ts,tsx}'],
+    ignores: ['**/*.test.ts', '**/*.test.tsx'],
+    rules: {
+      '@typescript-eslint/no-unsafe-type-assertion': 'error',
+    },
+  },
+  {
+    // Allow os.homedir() in tests and paths.ts where it is used to implement the helper
+    files: [
+      '**/*.test.ts',
+      '**/*.test.tsx',
+      'packages/core/src/utils/paths.ts',
+      'packages/test-utils/src/**/*.ts',
+      'scripts/**/*.js',
+    ],
+    rules: {
+      'no-restricted-imports': 'off',
     },
   },
   {
@@ -197,6 +240,18 @@ export default tseslint.config(
     },
   },
   {
+    files: ['packages/sdk/src/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          name: '@google/gemini-cli-sdk',
+          message: 'Please use relative imports within the @google/gemini-cli-sdk package.',
+        },
+      ],
+    },
+  },
+  {
     files: ['packages/*/src/**/*.test.{ts,tsx}'],
     plugins: {
       vitest,
@@ -208,7 +263,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['./**/*.{tsx,ts,js}'],
+    files: ['./**/*.{tsx,ts,js,cjs}'],
     ignores: ['packages/core/src/core/openaiContentGenerator.ts', 'packages/core/src/core/openaiContentGenerator.test.ts'],
     plugins: {
       headers,
@@ -226,8 +281,8 @@ export default tseslint.config(
           ].join('\n'),
           patterns: {
             year: {
-              pattern: '202[5-6]',
-              defaultValue: '2026',
+              pattern: `202[5-${currentYear.toString().slice(-1)}]`,
+              defaultValue: currentYear.toString(),
             },
           },
         },
@@ -235,7 +290,6 @@ export default tseslint.config(
       'import/enforce-node-protocol-usage': ['error', 'always'],
     },
   },
-  // extra settings for scripts that we run directly with node
   {
     files: ['./scripts/**/*.js', 'esbuild.config.js'],
     languageOptions: {
@@ -246,6 +300,30 @@ export default tseslint.config(
       },
     },
     rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
+    },
+  },
+  {
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-restricted-syntax': 'off',
+      'no-console': 'off',
+      'no-empty': 'off',
+      'no-redeclare': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/no-unused-vars': [
         'error',
         {
@@ -268,6 +346,16 @@ export default tseslint.config(
     rules: {
       'no-restricted-syntax': 'off',
       '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  // Examples should have access to standard globals like fetch
+  {
+    files: ['packages/cli/src/commands/extensions/examples/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        fetch: 'readonly',
+      },
     },
   },
   // extra settings for scripts that we run directly with node

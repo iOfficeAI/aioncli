@@ -378,7 +378,8 @@ export class Task {
       if (tc.status === 'awaiting_approval' && tc.confirmationDetails) {
         this.pendingToolConfirmationDetails.set(
           tc.request.callId,
-          tc.confirmationDetails,
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+          tc.confirmationDetails as ToolCallConfirmationDetails,
         );
       }
 
@@ -411,8 +412,10 @@ export class Task {
       );
       toolCalls.forEach((tc: ToolCall) => {
         if (tc.status === 'awaiting_approval' && tc.confirmationDetails) {
-          // eslint-disable-next-line @typescript-eslint/no-floating-promises
-          tc.confirmationDetails.onConfirm(ToolConfirmationOutcome.ProceedOnce);
+          // eslint-disable-next-line @typescript-eslint/no-floating-promises, @typescript-eslint/no-unsafe-type-assertion
+          (tc.confirmationDetails as ToolCallConfirmationDetails).onConfirm(
+            ToolConfirmationOutcome.ProceedOnce,
+          );
           this.pendingToolConfirmationDetails.delete(tc.request.callId);
         }
       });
@@ -463,12 +466,14 @@ export class Task {
     T extends ToolCall | AnyDeclarativeTool,
     K extends UnionKeys<T>,
   >(from: T, ...fields: K[]): Partial<T> {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const ret = {} as Pick<T, K>;
     for (const field of fields) {
       if (field in from) {
         ret[field] = from[field];
       }
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return ret as Partial<T>;
   }
 
@@ -491,6 +496,7 @@ export class Task {
     );
 
     if (tc.tool) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       serializableToolCall.tool = this._pickFields(
         tc.tool,
         'name',
@@ -573,7 +579,10 @@ export class Task {
       EDIT_TOOL_NAMES.has(request.name),
     );
 
-    if (restorableToolCalls.length > 0) {
+    if (
+      restorableToolCalls.length > 0 &&
+      this.config.getCheckpointingEnabled()
+    ) {
       const gitService = await this.config.getGitService();
       if (gitService) {
         const { checkpointsToWrite, toolCallToCheckpointMap, errors } =
@@ -617,8 +626,11 @@ export class Task {
           request.args['new_string']
         ) {
           const newContent = await this.getProposedContent(
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
             request.args['file_path'] as string,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
             request.args['old_string'] as string,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
             request.args['new_string'] as string,
           );
           return { ...request, args: { ...request.args, newContent } };
@@ -707,9 +719,14 @@ export class Task {
       case GeminiEventType.ModelInfo:
         this.modelInfo = event.value;
         break;
+      case GeminiEventType.Retry:
+      case GeminiEventType.InvalidStream:
+        // An invalid stream should trigger a retry, which requires no action from the user.
+        break;
       case GeminiEventType.Error:
       default: {
         // Block scope for lexical declaration
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         const errorEvent = event as ServerGeminiErrorEvent; // Type assertion
         const errorMessage =
           errorEvent.value?.error.message ?? 'Unknown error from LLM stream';
@@ -798,6 +815,7 @@ export class Task {
         if (confirmationDetails.type === 'edit') {
           const payload = part.data['newContent']
             ? ({
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
                 newContent: part.data['newContent'] as string,
               } as ToolConfirmationPayload)
             : undefined;

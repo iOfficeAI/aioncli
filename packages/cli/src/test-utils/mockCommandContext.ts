@@ -7,6 +7,7 @@
 import { vi } from 'vitest';
 import type { CommandContext } from '../ui/commands/types.js';
 import type { LoadedSettings } from '../config/settings.js';
+import { mergeSettings } from '../config/settings.js';
 import type { GitService } from '@google/gemini-cli-core';
 import type { SessionStatsState } from '../ui/contexts/SessionContext.js';
 
@@ -27,6 +28,8 @@ type DeepPartial<T> = T extends object
 export const createMockCommandContext = (
   overrides: DeepPartial<CommandContext> = {},
 ): CommandContext => {
+  const defaultMergedSettings = mergeSettings({}, {}, {}, {}, true);
+
   const defaultMocks: CommandContext = {
     invocation: {
       raw: '',
@@ -35,8 +38,14 @@ export const createMockCommandContext = (
     },
     services: {
       config: null,
-      settings: { merged: {} } as LoadedSettings,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      settings: {
+        merged: defaultMergedSettings,
+        setValue: vi.fn(),
+        forScope: vi.fn().mockReturnValue({ settings: {} }),
+      } as unknown as LoadedSettings,
       git: undefined as GitService | undefined,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       logger: {
         log: vi.fn(),
         logMessage: vi.fn(),
@@ -45,6 +54,7 @@ export const createMockCommandContext = (
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any, // Cast because Logger is a class.
     },
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     ui: {
       addItem: vi.fn(),
       clear: vi.fn(),
@@ -53,13 +63,17 @@ export const createMockCommandContext = (
       setPendingItem: vi.fn(),
       loadHistory: vi.fn(),
       toggleCorgiMode: vi.fn(),
+      toggleShortcutsHelp: vi.fn(),
       toggleVimEnabled: vi.fn(),
+      openAgentConfigDialog: vi.fn(),
+      closeAgentConfigDialog: vi.fn(),
       extensionsUpdateState: new Map(),
       setExtensionsUpdateState: vi.fn(),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     session: {
       sessionShellAllowlist: new Set<string>(),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       stats: {
         sessionStartTime: new Date(),
         lastPromptTokenCount: 0,

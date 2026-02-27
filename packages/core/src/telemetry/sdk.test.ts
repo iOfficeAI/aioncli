@@ -75,6 +75,8 @@ describe('Telemetry SDK', () => {
       getSessionId: () => 'test-session',
       getTelemetryUseCliAuth: () => false,
       isInteractive: () => false,
+      getExperiments: () => undefined,
+      getExperimentsAsync: async () => undefined,
     } as unknown as Config;
   });
 
@@ -312,7 +314,8 @@ describe('Telemetry SDK', () => {
     expect(GcpTraceExporter).not.toHaveBeenCalled();
 
     // 2. Set project ID and emit post_auth event
-    process.env['GOOGLE_CLOUD_PROJECT'] = 'test-project';
+    vi.stubEnv('GOOGLE_CLOUD_PROJECT', 'test-project');
+    vi.stubEnv('OTLP_GOOGLE_CLOUD_PROJECT', 'test-project');
 
     const mockCredentials = {
       client_email: 'test@example.com',
@@ -352,6 +355,7 @@ describe('Telemetry SDK', () => {
       expect(callback).not.toHaveBeenCalled();
 
       await initializeTelemetry(mockConfig);
+      await new Promise((resolve) => setTimeout(resolve, 10));
       expect(callback).toHaveBeenCalled();
     });
   });

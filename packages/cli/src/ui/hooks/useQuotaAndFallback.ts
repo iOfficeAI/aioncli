@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -9,23 +9,29 @@ import {
   type Config,
   type FallbackModelHandler,
   type FallbackIntent,
+  type ValidationHandler,
+  type ValidationIntent,
   TerminalQuotaError,
   ModelNotFoundError,
   type UserTierId,
-  PREVIEW_GEMINI_MODEL,
-  DEFAULT_GEMINI_MODEL,
   VALID_GEMINI_MODELS,
+  isProModel,
+  getDisplayString,
 } from '@google/gemini-cli-core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type UseHistoryManagerReturn } from './useHistoryManager.js';
 import { MessageType } from '../types.js';
-import { type ProQuotaDialogRequest } from '../contexts/UIStateContext.js';
+import {
+  type ProQuotaDialogRequest,
+  type ValidationDialogRequest,
+} from '../contexts/UIStateContext.js';
 
 interface UseQuotaAndFallbackArgs {
   config: Config;
   historyManager: UseHistoryManagerReturn;
   userTier: UserTierId | undefined;
   setModelSwitchedFromQuotaError: (value: boolean) => void;
+  onShowAuthSelection: () => void;
 }
 
 export function useQuotaAndFallback({
@@ -33,10 +39,14 @@ export function useQuotaAndFallback({
   historyManager,
   userTier,
   setModelSwitchedFromQuotaError,
+  onShowAuthSelection,
 }: UseQuotaAndFallbackArgs) {
   const [proQuotaRequest, setProQuotaRequest] =
     useState<ProQuotaDialogRequest | null>(null);
+  const [validationRequest, setValidationRequest] =
+    useState<ValidationDialogRequest | null>(null);
   const isDialogPending = useRef(false);
+  const isValidationPending = useRef(false);
 
   // Set up Flash fallback handler
   useEffect(() => {
@@ -57,33 +67,35 @@ export function useQuotaAndFallback({
       let message: string;
       let isTerminalQuotaError = false;
       let isModelNotFoundError = false;
-      const usageLimitReachedModel =
-        failedModel === DEFAULT_GEMINI_MODEL ||
-        failedModel === PREVIEW_GEMINI_MODEL
-          ? 'all Pro models'
-          : failedModel;
+      const usageLimitReachedModel = isProModel(failedModel)
+        ? 'all Pro models'
+        : failedModel;
       if (error instanceof TerminalQuotaError) {
         isTerminalQuotaError = true;
         // Common part of the message for both tiers
         const messageLines = [
           `Usage limit reached for ${usageLimitReachedModel}.`,
           error.retryDelayMs ? getResetTimeMessage(error.retryDelayMs) : null,
-          `/stats for usage details`,
+          `/stats model for usage details`,
           `/model to switch models.`,
           `/auth to switch to API key.`,
         ].filter(Boolean);
         message = messageLines.join('\n');
-      } else if (
-        error instanceof ModelNotFoundError &&
-        VALID_GEMINI_MODELS.has(failedModel)
-      ) {
+      } else if (error instanceof ModelNotFoundError) {
         isModelNotFoundError = true;
-        const messageLines = [
-          `It seems like you don't have access to ${failedModel}.`,
-          `Learn more at https://goo.gle/enable-preview-features`,
-          `To disable ${failedModel}, disable "Preview features" in /settings.`,
-        ];
-        message = messageLines.join('\n');
+        if (VALID_GEMINI_MODELS.has(failedModel)) {
+          const messageLines = [
+            `It seems like you don't have access to ${getDisplayString(failedModel)}.`,
+            `Your admin might have disabled the access. Contact them to enable the Preview Release Channel.`,
+          ];
+          message = messageLines.join('\n');
+        } else {
+          const messageLines = [
+            `Model "${failedModel}" was not found or is invalid.`,
+            `/model to switch models.`,
+          ];
+          message = messageLines.join('\n');
+        }
       } else {
         const messageLines = [
           `We are currently experiencing high demand.`,
@@ -120,6 +132,36 @@ export function useQuotaAndFallback({
     config.setFallbackModelHandler(fallbackHandler);
   }, [config, historyManager, userTier, setModelSwitchedFromQuotaError]);
 
+  // Set up validation handler for 403 VALIDATION_REQUIRED errors
+  useEffect(() => {
+    const validationHandler: ValidationHandler = async (
+      validationLink,
+      validationDescription,
+      learnMoreUrl,
+    ): Promise<ValidationIntent> => {
+      if (isValidationPending.current) {
+        return 'cancel'; // A validation dialog is already active
+      }
+      isValidationPending.current = true;
+
+      const intent: ValidationIntent = await new Promise<ValidationIntent>(
+        (resolve) => {
+          // Call setValidationRequest directly - same pattern as proQuotaRequest
+          setValidationRequest({
+            validationLink,
+            validationDescription,
+            learnMoreUrl,
+            resolve,
+          });
+        },
+      );
+
+      return intent;
+    };
+
+    config.setValidationHandler(validationHandler);
+  }, [config]);
+
   const handleProQuotaChoice = useCallback(
     (choice: FallbackIntent) => {
       if (!proQuotaRequest) return;
@@ -129,26 +171,48 @@ export function useQuotaAndFallback({
       setProQuotaRequest(null);
       isDialogPending.current = false; // Reset the flag here
 
-      if (choice === 'retry_always') {
-        // Set the model to the fallback model for the current session.
-        // This ensures the Footer updates and future turns use this model.
-        // The change is not persisted, so the original model is restored on restart.
-        config.activateFallbackMode(proQuotaRequest.fallbackModel);
-        historyManager.addItem(
-          {
-            type: MessageType.INFO,
-            text: `Switched to fallback model ${proQuotaRequest.fallbackModel}`,
-          },
-          Date.now(),
-        );
+      if (choice === 'retry_always' || choice === 'retry_once') {
+        // Reset quota error flags to allow the agent loop to continue.
+        setModelSwitchedFromQuotaError(false);
+        config.setQuotaErrorOccurred(false);
+
+        if (choice === 'retry_always') {
+          historyManager.addItem(
+            {
+              type: MessageType.INFO,
+              text: `Switched to fallback model ${proQuotaRequest.fallbackModel}`,
+            },
+            Date.now(),
+          );
+        }
       }
     },
-    [proQuotaRequest, historyManager, config],
+    [proQuotaRequest, historyManager, config, setModelSwitchedFromQuotaError],
+  );
+
+  const handleValidationChoice = useCallback(
+    (choice: ValidationIntent) => {
+      // Guard against double-execution (e.g. rapid clicks) and stale requests
+      if (!isValidationPending.current || !validationRequest) return;
+
+      // Immediately clear the flag to prevent any subsequent calls from passing the guard
+      isValidationPending.current = false;
+
+      validationRequest.resolve(choice);
+      setValidationRequest(null);
+
+      if (choice === 'change_auth' || choice === 'cancel') {
+        onShowAuthSelection();
+      }
+    },
+    [validationRequest, onShowAuthSelection],
   );
 
   return {
     proQuotaRequest,
     handleProQuotaChoice,
+    validationRequest,
+    handleValidationChoice,
   };
 }
 

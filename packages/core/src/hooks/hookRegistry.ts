@@ -6,7 +6,7 @@
 
 import type { Config } from '../config/config.js';
 import type { HookDefinition, HookConfig } from './types.js';
-import { HookEventName, ConfigSource } from './types.js';
+import { HookEventName, ConfigSource, HOOKS_CONFIG_FIELDS } from './types.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import { TrustedHooksManager } from './trustedHooks.js';
 import { coreEvents } from '../utils/events.js';
@@ -41,7 +41,7 @@ export class HookRegistry {
     this.entries = [];
     this.processHooksFromConfig();
 
-    debugLogger.log(
+    debugLogger.debug(
       `Hook registry initialized with ${this.entries.length} hook entries`,
     );
   }
@@ -169,8 +169,15 @@ please review the project settings (.gemini/settings.json) and remove them.`;
     source: ConfigSource,
   ): void {
     for (const [eventName, definitions] of Object.entries(hooksConfig)) {
+      if (HOOKS_CONFIG_FIELDS.includes(eventName)) {
+        continue;
+      }
+
       if (!this.isValidEventName(eventName)) {
-        debugLogger.warn(`Invalid hook event name: ${eventName}`);
+        coreEvents.emitFeedback(
+          'warning',
+          `Invalid hook event name: "${eventName}" from ${source} config. Skipping.`,
+        );
         continue;
       }
 
@@ -219,6 +226,7 @@ please review the project settings (.gemini/settings.json) and remove them.`;
         this.validateHookConfig(hookConfig, eventName, source)
       ) {
         // Check if this hook is in the disabled list
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         const hookName = this.getHookName({
           config: hookConfig,
         } as HookRegistryEntry);
@@ -275,6 +283,7 @@ please review the project settings (.gemini/settings.json) and remove them.`;
    */
   private isValidEventName(eventName: string): eventName is HookEventName {
     const validEventNames = Object.values(HookEventName);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     return validEventNames.includes(eventName as HookEventName);
   }
 

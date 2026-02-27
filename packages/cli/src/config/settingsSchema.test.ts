@@ -79,7 +79,7 @@ describe('SettingsSchema', () => {
       ).toBeDefined();
       expect(
         getSettingsSchema().ui?.properties?.accessibility.properties
-          ?.disableLoadingPhrases.type,
+          ?.enableLoadingPhrases.type,
       ).toBe('boolean');
     });
 
@@ -107,6 +107,14 @@ describe('SettingsSchema', () => {
         getSettingsSchema().context.properties.fileFiltering.properties
           ?.enableRecursiveFileSearch,
       ).toBeDefined();
+      expect(
+        getSettingsSchema().context.properties.fileFiltering.properties
+          ?.customIgnoreFilePaths,
+      ).toBeDefined();
+      expect(
+        getSettingsSchema().context.properties.fileFiltering.properties
+          ?.customIgnoreFilePaths.type,
+      ).toBe('array');
     });
 
     it('should have unique categories', () => {
@@ -170,7 +178,7 @@ describe('SettingsSchema', () => {
         true,
       );
       expect(
-        getSettingsSchema().general.properties.disableAutoUpdate.showInDialog,
+        getSettingsSchema().general.properties.enableAutoUpdate.showInDialog,
       ).toBe(true);
       expect(
         getSettingsSchema().ui.properties.hideWindowTitle.showInDialog,
@@ -178,6 +186,9 @@ describe('SettingsSchema', () => {
       expect(getSettingsSchema().ui.properties.hideTips.showInDialog).toBe(
         true,
       );
+      expect(
+        getSettingsSchema().ui.properties.showShortcutsHint.showInDialog,
+      ).toBe(true);
       expect(getSettingsSchema().ui.properties.hideBanner.showInDialog).toBe(
         true,
       );
@@ -216,7 +227,7 @@ describe('SettingsSchema', () => {
       expect(
         getSettingsSchema().advanced.properties.autoConfigureMemory
           .showInDialog,
-      ).toBe(false);
+      ).toBe(true);
     });
 
     it('should infer Settings type correctly', () => {
@@ -286,7 +297,7 @@ describe('SettingsSchema', () => {
       expect(
         getSettingsSchema().security.properties.folderTrust.properties.enabled
           .default,
-      ).toBe(false);
+      ).toBe(true);
       expect(
         getSettingsSchema().security.properties.folderTrust.properties.enabled
           .showInDialog,
@@ -320,28 +331,26 @@ describe('SettingsSchema', () => {
       ).toBe('Enable debug logging of keystrokes to the console.');
     });
 
-    it('should have previewFeatures setting in schema', () => {
-      expect(
-        getSettingsSchema().general.properties.previewFeatures,
-      ).toBeDefined();
-      expect(getSettingsSchema().general.properties.previewFeatures.type).toBe(
+    it('should have showShortcutsHint setting in schema', () => {
+      expect(getSettingsSchema().ui.properties.showShortcutsHint).toBeDefined();
+      expect(getSettingsSchema().ui.properties.showShortcutsHint.type).toBe(
         'boolean',
       );
+      expect(getSettingsSchema().ui.properties.showShortcutsHint.category).toBe(
+        'UI',
+      );
+      expect(getSettingsSchema().ui.properties.showShortcutsHint.default).toBe(
+        true,
+      );
       expect(
-        getSettingsSchema().general.properties.previewFeatures.category,
-      ).toBe('General');
-      expect(
-        getSettingsSchema().general.properties.previewFeatures.default,
+        getSettingsSchema().ui.properties.showShortcutsHint.requiresRestart,
       ).toBe(false);
       expect(
-        getSettingsSchema().general.properties.previewFeatures.requiresRestart,
-      ).toBe(false);
-      expect(
-        getSettingsSchema().general.properties.previewFeatures.showInDialog,
+        getSettingsSchema().ui.properties.showShortcutsHint.showInDialog,
       ).toBe(true);
       expect(
-        getSettingsSchema().general.properties.previewFeatures.description,
-      ).toBe('Enable preview features (e.g., preview models).');
+        getSettingsSchema().ui.properties.showShortcutsHint.description,
+      ).toBe('Show the "? for shortcuts" hint above the input.');
     });
 
     it('should have enableAgents setting in schema', () => {
@@ -357,8 +366,32 @@ describe('SettingsSchema', () => {
       );
     });
 
-    it('should have hooks.notifications setting in schema', () => {
-      const setting = getSettingsSchema().hooks.properties.notifications;
+    it('should have skills setting enabled by default', () => {
+      const setting = getSettingsSchema().skills.properties.enabled;
+      expect(setting).toBeDefined();
+      expect(setting.type).toBe('boolean');
+      expect(setting.category).toBe('Advanced');
+      expect(setting.default).toBe(true);
+      expect(setting.requiresRestart).toBe(true);
+      expect(setting.showInDialog).toBe(true);
+      expect(setting.description).toBe('Enable Agent Skills.');
+    });
+
+    it('should have plan setting in schema', () => {
+      const setting = getSettingsSchema().experimental.properties.plan;
+      expect(setting).toBeDefined();
+      expect(setting.type).toBe('boolean');
+      expect(setting.category).toBe('Experimental');
+      expect(setting.default).toBe(false);
+      expect(setting.requiresRestart).toBe(true);
+      expect(setting.showInDialog).toBe(true);
+      expect(setting.description).toBe(
+        'Enable planning features (Plan Mode and tools).',
+      );
+    });
+
+    it('should have hooksConfig.notifications setting in schema', () => {
+      const setting = getSettingsSchema().hooksConfig?.properties.notifications;
       expect(setting).toBeDefined();
       expect(setting.type).toBe('boolean');
       expect(setting.category).toBe('Advanced');

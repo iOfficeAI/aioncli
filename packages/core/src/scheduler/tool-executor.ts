@@ -20,7 +20,10 @@ import {
 import { SHELL_TOOL_NAME } from '../tools/tool-names.js';
 import { ShellToolInvocation } from '../tools/shell.js';
 import { executeToolWithHooks } from '../core/coreToolHookTriggers.js';
-import { saveTruncatedContent } from '../utils/fileUtils.js';
+import {
+  saveTruncatedToolOutput,
+  formatTruncatedToolOutput,
+} from '../utils/fileUtils.js';
 import { convertToFunctionResponse } from '../utils/generateContentResponseUtilities.js';
 import type {
   CompletedToolCall,
@@ -30,6 +33,7 @@ import type {
   SuccessfulToolCall,
   CancelledToolCall,
 } from './types.js';
+import { CoreToolCallStatus } from './types.js';
 
 export interface ToolExecutionContext {
   call: ToolCall;
@@ -63,8 +67,6 @@ export class ToolExecutor {
         : undefined;
 
     const shellExecutionConfig = this.config.getShellExecutionConfig();
-    const hooksEnabled = this.config.getEnableHooks();
-    const messageBus = this.config.getMessageBus();
 
     return runInDevTraceSpan(
       {
@@ -80,7 +82,7 @@ export class ToolExecutor {
             const setPidCallback = (pid: number) => {
               const executingCall: ExecutingToolCall = {
                 ...call,
-                status: 'executing',
+                status: CoreToolCallStatus.Executing,
                 tool,
                 invocation,
                 pid,
@@ -92,23 +94,22 @@ export class ToolExecutor {
               invocation,
               toolName,
               signal,
-              messageBus,
-              hooksEnabled,
               tool,
               liveOutputCallback,
               shellExecutionConfig,
               setPidCallback,
+              this.config,
             );
           } else {
             promise = executeToolWithHooks(
               invocation,
               toolName,
               signal,
-              messageBus,
-              hooksEnabled,
               tool,
               liveOutputCallback,
               shellExecutionConfig,
+              undefined,
+              this.config,
             );
           }
 
@@ -123,10 +124,15 @@ export class ToolExecutor {
           } else if (toolResult.error === undefined) {
             return await this.createSuccessResult(call, toolResult);
           } else {
+            const displayText =
+              typeof toolResult.returnDisplay === 'string'
+                ? toolResult.returnDisplay
+                : undefined;
             return this.createErrorResult(
               call,
               new Error(toolResult.error.message),
               toolResult.error.type,
+              displayText,
             );
           }
         } catch (executionError: unknown) {
@@ -165,7 +171,7 @@ export class ToolExecutor {
     }
 
     return {
-      status: 'cancelled',
+      status: CoreToolCallStatus.Cancelled,
       request: call.request,
       response: {
         callId: call.request.callId,
@@ -199,27 +205,21 @@ export class ToolExecutor {
     const toolName = call.request.name;
     const callId = call.request.callId;
 
-    if (
-      typeof content === 'string' &&
-      toolName === SHELL_TOOL_NAME &&
-      this.config.getEnableToolOutputTruncation() &&
-      this.config.getTruncateToolOutputThreshold() > 0 &&
-      this.config.getTruncateToolOutputLines() > 0
-    ) {
-      const originalContentLength = content.length;
+    if (typeof content === 'string' && toolName === SHELL_TOOL_NAME) {
       const threshold = this.config.getTruncateToolOutputThreshold();
-      const lines = this.config.getTruncateToolOutputLines();
-      const truncatedResult = await saveTruncatedContent(
-        content,
-        callId,
-        this.config.storage.getProjectTempDir(),
-        threshold,
-        lines,
-      );
-      content = truncatedResult.content;
-      outputFile = truncatedResult.outputFile;
 
-      if (outputFile) {
+      if (threshold > 0 && content.length > threshold) {
+        const originalContentLength = content.length;
+        const { outputFile: savedPath } = await saveTruncatedToolOutput(
+          content,
+          toolName,
+          callId,
+          this.config.storage.getProjectTempDir(),
+          this.config.getSessionId(),
+        );
+        outputFile = savedPath;
+        content = formatTruncatedToolOutput(content, outputFile, threshold);
+
         logToolOutputTruncated(
           this.config,
           new ToolOutputTruncatedEvent(call.request.prompt_id, {
@@ -227,7 +227,6 @@ export class ToolExecutor {
             originalContentLength,
             truncatedContentLength: content.length,
             threshold,
-            lines,
           }),
         );
       }
@@ -248,6 +247,7 @@ export class ToolExecutor {
       errorType: undefined,
       outputFile,
       contentLength: typeof content === 'string' ? content.length : undefined,
+      data: toolResult.data,
     };
 
     const startTime = 'startTime' in call ? call.startTime : undefined;
@@ -257,7 +257,7 @@ export class ToolExecutor {
     }
 
     return {
-      status: 'success',
+      status: CoreToolCallStatus.Success,
       request: call.request,
       tool: call.tool,
       response: successResponse,
@@ -271,12 +271,18 @@ export class ToolExecutor {
     call: ToolCall,
     error: Error,
     errorType?: ToolErrorType,
+    returnDisplay?: string,
   ): ErroredToolCall {
-    const response = this.createErrorResponse(call.request, error, errorType);
+    const response = this.createErrorResponse(
+      call.request,
+      error,
+      errorType,
+      returnDisplay,
+    );
     const startTime = 'startTime' in call ? call.startTime : undefined;
 
     return {
-      status: 'error',
+      status: CoreToolCallStatus.Error,
       request: call.request,
       response,
       tool: call.tool,
@@ -289,7 +295,9 @@ export class ToolExecutor {
     request: ToolCallRequestInfo,
     error: Error,
     errorType: ToolErrorType | undefined,
+    returnDisplay?: string,
   ): ToolCallResponseInfo {
+    const displayText = returnDisplay ?? error.message;
     return {
       callId: request.callId,
       error,
@@ -302,9 +310,9 @@ export class ToolExecutor {
           },
         },
       ],
-      resultDisplay: error.message,
+      resultDisplay: displayText,
       errorType,
-      contentLength: error.message.length,
+      contentLength: displayText.length,
     };
   }
 }

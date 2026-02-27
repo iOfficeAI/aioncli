@@ -24,6 +24,7 @@ import OpenAI from 'openai';
 import { logApiResponse } from '../telemetry/loggers.js';
 import { toContents } from '../code_assist/converter.js';
 import { ApiResponseEvent } from '../telemetry/types.js';
+import type { LlmRole } from '../telemetry/llmRole.js';
 import type { Config } from '../config/config.js';
 import { safeJsonParse } from '../utils/safeJsonParse.js';
 
@@ -234,6 +235,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
   async generateContent(
     request: GenerateContentParameters,
     userPromptId: string,
+    _role?: LlmRole,
   ): Promise<GenerateContentResponse> {
     const startTime = Date.now();
     const messages = this.convertToOpenAIFormat(request);
@@ -412,6 +414,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
   async generateContentStream(
     request: GenerateContentParameters,
     userPromptId: string,
+    _role?: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     const startTime = Date.now();
     const messages = this.convertToOpenAIFormat(request);

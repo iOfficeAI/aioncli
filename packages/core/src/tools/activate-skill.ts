@@ -4,8 +4,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import * as path from 'node:path';
 import { getFolderStructure } from '../utils/getFolderStructure.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
@@ -18,6 +16,9 @@ import type {
 import { BaseDeclarativeTool, BaseToolInvocation, Kind } from './tools.js';
 import type { Config } from '../config/config.js';
 import { ACTIVATE_SKILL_TOOL_NAME } from './tool-names.js';
+import { ToolErrorType } from './tool-error.js';
+import { getActivateSkillDefinition } from './definitions/coreTools.js';
+import { resolveToolDeclaration } from './definitions/resolver.js';
 
 /**
  * Parameters for the ActivateSkill tool
@@ -51,7 +52,7 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
     if (skill) {
       return `"${skillName}": ${skill.description}`;
     }
-    return `"${skillName}" (⚠️ unknown skill)`;
+    return `"${skillName}" (?) unknown skill`;
   }
 
   private async getOrFetchFolderStructure(
@@ -76,6 +77,10 @@ class ActivateSkillToolInvocation extends BaseToolInvocation<
     const skill = this.config.getSkillManager().getSkill(skillName);
 
     if (!skill) {
+      return false;
+    }
+
+    if (skill.isBuiltin) {
       return false;
     }
 
@@ -107,9 +112,15 @@ ${folderStructure}`,
 
     if (!skill) {
       const skills = skillManager.getSkills();
+      const availableSkills = skills.map((s) => s.name).join(', ');
+      const errorMessage = `Skill "${skillName}" not found. Available skills are: ${availableSkills}`;
       return {
-        llmContent: `Error: Skill "${skillName}" not found. Available skills are: ${skills.map((s) => s.name).join(', ')}`,
-        returnDisplay: `Skill "${skillName}" not found.`,
+        llmContent: `Error: ${errorMessage}`,
+        returnDisplay: `Error: ${errorMessage}`,
+        error: {
+          message: errorMessage,
+          type: ToolErrorType.INVALID_TOOL_PARAMS,
+        },
       };
     }
 
@@ -126,15 +137,15 @@ ${folderStructure}`,
     );
 
     return {
-      llmContent: `<ACTIVATED_SKILL name="${skillName}">
-  <INSTRUCTIONS>
+      llmContent: `<activated_skill name="${skillName}">
+  <instructions>
     ${skill.body}
-  </INSTRUCTIONS>
+  </instructions>
 
-  <AVAILABLE_RESOURCES>
+  <available_resources>
     ${folderStructure}
-  </AVAILABLE_RESOURCES>
-</ACTIVATED_SKILL>`,
+  </available_resources>
+</activated_skill>`,
       returnDisplay: `Skill **${skillName}** activated. Resources loaded from \`${path.dirname(skill.location)}\`:\n\n${folderStructure}`,
     };
   }
@@ -155,26 +166,14 @@ export class ActivateSkillTool extends BaseDeclarativeTool<
   ) {
     const skills = config.getSkillManager().getSkills();
     const skillNames = skills.map((s) => s.name);
-
-    let schema: z.ZodTypeAny;
-    if (skillNames.length === 0) {
-      schema = z.object({
-        name: z.string().describe('No skills are currently available.'),
-      });
-    } else {
-      schema = z.object({
-        name: z
-          .enum(skillNames as [string, ...string[]])
-          .describe('The name of the skill to activate.'),
-      });
-    }
+    const definition = getActivateSkillDefinition(skillNames);
 
     super(
       ActivateSkillTool.Name,
       'Activate Skill',
-      "Activates a specialized agent skill by name. Returns the skill's instructions wrapped in `<ACTIVATED_SKILL>` tags. These provide specialized guidance for the current task. Use this when you identify a task that matches a skill's description.",
+      definition.base.description!,
       Kind.Other,
-      zodToJsonSchema(schema),
+      definition.base.parametersJsonSchema,
       messageBus,
       true,
       false,
@@ -193,6 +192,15 @@ export class ActivateSkillTool extends BaseDeclarativeTool<
       messageBus,
       _toolName,
       _toolDisplayName ?? 'Activate Skill',
+    );
+  }
+
+  override getSchema(modelId?: string) {
+    const skills = this.config.getSkillManager().getSkills();
+    const skillNames = skills.map((s) => s.name);
+    return resolveToolDeclaration(
+      getActivateSkillDefinition(skillNames),
+      modelId,
     );
   }
 }

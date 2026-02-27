@@ -70,6 +70,14 @@ vi.mock('./oauth-credential-storage.js', () => ({
   },
 }));
 
+vi.mock('../mcp/token-storage/hybrid-token-storage.js', () => ({
+  HybridTokenStorage: vi.fn(() => ({
+    getCredentials: vi.fn(),
+    setCredentials: vi.fn(),
+    deleteCredentials: vi.fn(),
+  })),
+}));
+
 const mockConfig = {
   getNoBrowser: () => false,
   getProxy: () => 'http://test.proxy.com:8080',
@@ -1181,17 +1189,15 @@ describe('oauth2', () => {
         );
 
         // Spy on process.stdin.on and immediately trigger Ctrl+C
-        const stdinOnSpy = vi
-          .spyOn(process.stdin, 'on')
-          .mockImplementation(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (event: any, listener: any) => {
-              if (event === 'data') {
-                listener(Buffer.from([0x03]));
-              }
-              return process.stdin;
-            },
-          );
+        const stdinOnSpy = vi.spyOn(process.stdin, 'on').mockImplementation(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (event: any, listener: any) => {
+            if (event === 'data') {
+              listener(Buffer.from([0x03]));
+            }
+            return process.stdin;
+          },
+        );
 
         const stdinRemoveListenerSpy = vi.spyOn(
           process.stdin,

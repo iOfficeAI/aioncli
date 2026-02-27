@@ -17,6 +17,7 @@ import type {
 } from '@google/genai';
 import { FinishReason, GenerateContentResponse } from '@google/genai';
 import type { ContentGenerator } from './contentGenerator.js';
+import type { LlmRole } from '../telemetry/llmRole.js';
 import {
   BedrockRuntimeClient,
   ConverseCommand,
@@ -88,6 +89,7 @@ export class BedrockContentGenerator implements ContentGenerator {
   async generateContent(
     request: GenerateContentParameters,
     _userPromptId: string,
+    _role?: LlmRole,
   ): Promise<GenerateContentResponse> {
     const startTime = Date.now();
     const { messages, system } = this.convertToBedrockMessages(request);
@@ -149,6 +151,7 @@ export class BedrockContentGenerator implements ContentGenerator {
   async generateContentStream(
     request: GenerateContentParameters,
     _userPromptId: string,
+    _role?: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     const startTime = Date.now();
     const { messages, system } = this.convertToBedrockMessages(request);

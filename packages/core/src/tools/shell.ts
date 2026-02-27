@@ -32,7 +32,7 @@ import type {
   ShellOutputEvent,
 } from '../services/shellExecutionService.js';
 import { ShellExecutionService } from '../services/shellExecutionService.js';
-import { formatMemoryUsage } from '../utils/formatters.js';
+import { formatBytes } from '../utils/formatters.js';
 import type { AnsiOutput } from '../utils/terminalSerializer.js';
 import {
   getCommandRoots,
@@ -48,6 +48,7 @@ export interface ShellToolParams {
   command: string;
   description?: string;
   dir_path?: string;
+  is_background?: boolean;
 }
 
 export class ShellToolInvocation extends BaseToolInvocation<
@@ -120,6 +121,7 @@ export class ShellToolInvocation extends BaseToolInvocation<
       title: 'Confirm Shell Command',
       command: this.params.command,
       rootCommand: rootCommands.join(', '),
+      rootCommands,
       onConfirm: async (outcome: ToolConfirmationOutcome) => {
         await this.publishPolicyUpdate(outcome);
       },
@@ -220,7 +222,7 @@ export class ShellToolInvocation extends BaseToolInvocation<
                 break;
               case 'binary_progress':
                 isBinaryStream = true;
-                cumulativeOutput = `[Receiving binary output... ${formatMemoryUsage(
+                cumulativeOutput = `[Receiving binary output... ${formatBytes(
                   event.bytesReceived,
                 )} received]`;
                 if (Date.now() - lastUpdateTime > OUTPUT_UPDATE_INTERVAL_MS) {
@@ -231,11 +233,15 @@ export class ShellToolInvocation extends BaseToolInvocation<
                 // Process event indicates the command is actively running
                 // Only update periodically to avoid excessive UI updates
                 if (Date.now() - lastUpdateTime > OUTPUT_UPDATE_INTERVAL_MS) {
-                  cumulativeOutput = `[Processing... ${formatMemoryUsage(
+                  cumulativeOutput = `[Processing... ${formatBytes(
                     event.bytesReceived,
                   )} received]`;
                   shouldUpdate = true;
                 }
+                break;
+              case 'exit':
+                // Exit event is handled by ShellExecutionService after this callback.
+                // Nothing to display here — just ignore it.
                 break;
               default: {
                 throw new Error('An unhandled ShellOutputEvent was found.');

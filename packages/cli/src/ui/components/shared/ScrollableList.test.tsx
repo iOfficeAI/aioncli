@@ -14,6 +14,12 @@ import { MouseProvider } from '../../contexts/MouseContext.js';
 import { describe, it, expect, vi } from 'vitest';
 import { waitFor } from '../../../test-utils/async.js';
 
+vi.mock('../../contexts/UIStateContext.js', () => ({
+  useUIState: vi.fn(() => ({
+    copyModeEnabled: false,
+  })),
+}));
+
 // Mock useStdout to provide a fixed size for testing
 vi.mock('ink', async (importOriginal) => {
   const actual = await importOriginal<typeof import('ink')>();
@@ -132,8 +138,10 @@ describe('ScrollableList Demo Behavior', () => {
     let listRef: ScrollableListRef<Item> | null = null;
     let lastFrame: () => string | undefined;
 
+    let result: ReturnType<typeof render>;
+
     await act(async () => {
-      const result = render(
+      result = render(
         <TestComponent
           onAddItem={(add) => {
             addItem = add;
@@ -186,6 +194,10 @@ describe('ScrollableList Demo Behavior', () => {
       expect(lastFrame!()).toContain('Count: 1003');
     });
     expect(lastFrame!()).not.toContain('Item 1003');
+
+    await act(async () => {
+      result.unmount();
+    });
   });
 
   it('should display sticky header when scrolled past the item', async () => {
@@ -237,8 +249,9 @@ describe('ScrollableList Demo Behavior', () => {
     };
 
     let lastFrame: () => string | undefined;
+    let result: ReturnType<typeof render>;
     await act(async () => {
-      const result = render(<StickyTestComponent />);
+      result = render(<StickyTestComponent />);
       lastFrame = result.lastFrame;
     });
 
@@ -280,6 +293,10 @@ describe('ScrollableList Demo Behavior', () => {
       expect(lastFrame!()).toContain('[Normal] Item 1');
     });
     expect(lastFrame!()).not.toContain('[STICKY] Item 1');
+
+    await act(async () => {
+      result.unmount();
+    });
   });
 
   describe('Keyboard Navigation', () => {
@@ -293,8 +310,9 @@ describe('ScrollableList Demo Behavior', () => {
         title: `Item ${i}`,
       }));
 
+      let result: ReturnType<typeof render>;
       await act(async () => {
-        const result = render(
+        result = render(
           <MouseProvider mouseEventsEnabled={false}>
             <KeypressProvider>
               <ScrollProvider>
@@ -356,21 +374,63 @@ describe('ScrollableList Demo Behavior', () => {
         expect(listRef?.getScrollState()?.scrollTop).toBeLessThan(2);
       });
 
-      // End -> \x1b[F
+      // End -> \x1b[1;5F (Ctrl+End)
       await act(async () => {
-        stdin.write('\x1b[F');
+        stdin.write('\x1b[1;5F');
       });
       await waitFor(() => {
         // Total 50 items, height 10. Max scroll ~40.
         expect(listRef?.getScrollState()?.scrollTop).toBeGreaterThan(30);
       });
 
-      // Home -> \x1b[H
+      // Home -> \x1b[1;5H (Ctrl+Home)
       await act(async () => {
-        stdin.write('\x1b[H');
+        stdin.write('\x1b[1;5H');
       });
       await waitFor(() => {
         expect(listRef?.getScrollState()?.scrollTop).toBe(0);
+      });
+
+      await act(async () => {
+        result.unmount();
+      });
+    });
+  });
+
+  describe('Width Prop', () => {
+    it('should apply the width prop to the container', async () => {
+      const items = [{ id: '1', title: 'Item 1' }];
+      let lastFrame: () => string | undefined;
+
+      let result: ReturnType<typeof render>;
+      await act(async () => {
+        result = render(
+          <MouseProvider mouseEventsEnabled={false}>
+            <KeypressProvider>
+              <ScrollProvider>
+                <Box width={100} height={20}>
+                  <ScrollableList
+                    data={items}
+                    renderItem={({ item }) => <Text>{item.title}</Text>}
+                    estimatedItemHeight={() => 1}
+                    keyExtractor={(item) => item.id}
+                    hasFocus={true}
+                    width={50}
+                  />
+                </Box>
+              </ScrollProvider>
+            </KeypressProvider>
+          </MouseProvider>,
+        );
+        lastFrame = result.lastFrame;
+      });
+
+      await waitFor(() => {
+        expect(lastFrame()).toContain('Item 1');
+      });
+
+      await act(async () => {
+        result.unmount();
       });
     });
   });
