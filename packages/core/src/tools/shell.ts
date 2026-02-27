@@ -239,6 +239,10 @@ export class ShellToolInvocation extends BaseToolInvocation<
                   shouldUpdate = true;
                 }
                 break;
+              case 'exit':
+                // Exit event is handled by ShellExecutionService after this callback.
+                // Nothing to display here — just ignore it.
+                break;
               default: {
                 throw new Error('An unhandled ShellOutputEvent was found.');
               }

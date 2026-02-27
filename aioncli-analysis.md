@@ -1664,17 +1664,21 @@ type Part = TextPart | InlineDataPart | FunctionCallPart | ...;
 
 ### v0.29.7 → v0.30.0 合并（2026-02-26）
 
-**合并分支**：`merge-upstream-latest`
-**上游版本**：google-gemini/gemini-cli v0.30.0（含 141 个 commit）
+**合并分支**：`merge-upstream-latest` **上游版本**：google-gemini/gemini-cli
+v0.30.0（含 141 个 commit）
 
 #### 1. 上游 v0.30.0 主要变更
 
 **架构改进**：
 
-- **LlmRole 遥测系统**：`generateContent` / `generateContentStream` 接口新增第三个参数 `role: LlmRole`，用于区分不同场景的 LLM 调用（主聊天、工具调用、路由分类等），增强遥测数据粒度
-- **模型分类体系重构**：新增 `isCustomModel()` 和 `supportsModernFeatures()` 函数，取代原有 `isPreviewModel()`，支持非 Gemini 模型的特性检测
+- **LlmRole 遥测系统**：`generateContent` / `generateContentStream`
+  接口新增第三个参数
+  `role: LlmRole`，用于区分不同场景的 LLM 调用（主聊天、工具调用、路由分类等），增强遥测数据粒度
+- **模型分类体系重构**：新增 `isCustomModel()` 和 `supportsModernFeatures()`
+  函数，取代原有 `isPreviewModel()`，支持非 Gemini 模型的特性检测
 - **CoreToolCallStatus 枚举**：替代原有字符串类型，为工具调用生命周期提供类型安全的状态管理
-- **SDK 包引入**：新增 `packages/sdk` 包，提供 Agent SDK 能力（`GeminiCliAgent` 等）
+- **SDK 包引入**：新增 `packages/sdk` 包，提供 Agent SDK 能力（`GeminiCliAgent`
+  等）
 
 **Plan Mode 增强**：
 
@@ -1708,48 +1712,184 @@ type Part = TextPart | InlineDataPart | FunctionCallPart | ...;
 
 #### 2. aioncli 冲突解决策略
 
-**总计冲突文件**：v0.29.7 合并 32 个 + v0.30.0 合并 22 个
+**两边修改文件交集**：65 个文件两侧都有改动，其中核心冲突集中在 6 个关键文件。
 
-**保护文件（保留 aioncli 改动）**：
+##### 2.1 `contentGenerator.ts` — 最核心的冲突
 
-| 文件 | 保护内容 | 处理方式 |
-|------|---------|---------|
-| `core/config/models.ts` | Bedrock 模型定义、区域验证 | 保留全部 + 接受上游 `isActiveModel()` |
-| `core/core/contentGenerator.ts` | `AuthType.USE_OPENAI/USE_BEDROCK`、`debugLogger` | 保留 + 接受 `LlmRole` 类型导入 |
-| `core/core/baseLlmClient.ts` | `generateJsonForOpenAI` 方法 | 新增 `role` 参数适配 |
-| `core/core/tokenLimits.ts` | 多模型 Token 上限映射 | 完整保留 |
-| `cli/validateNonInterActiveAuth.ts` | Bedrock/OpenAI 认证检测 | 保留本地 `getAuthTypeFromEnv()`，移除上游导入冲突 |
-| `core/prompts/promptProvider.ts` | - | 接受 `supportsModernFeatures` 替换 `isPreviewModel` |
+这是整个合并中最关键的文件，双方在不同区域都做了重要改动：
 
-**适配性修改**：
+| 区域                          | 我们的改动                                                             | 上游的改动                                                             | 解决方式       |
+| ----------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------- | -------------- |
+| `AuthType` 枚举               | 新增 `USE_OPENAI`, `USE_ANTHROPIC`, `USE_BEDROCK` 三个值               | 未改动                                                                 | **保留我们的** |
+| `ContentGenerator` 接口       | 未改动                                                                 | `generateContent`/`generateContentStream` 新增第三参数 `role: LlmRole` | **接受上游**   |
+| `getAuthTypeFromEnv()`        | 不存在                                                                 | 新增函数（仅含 Google 三种类型）                                       | **接受上游**   |
+| `ContentGeneratorConfig` 类型 | 扩展了 `model`, `timeout`, `maxRetries`, `samplingParams`, `awsRegion` | 未改动                                                                 | **保留我们的** |
+| `createContentGenerator()`    | 新增 OpenAI/Anthropic/Bedrock 创建分支                                 | 未改动                                                                 | **保留我们的** |
+| import 区域                   | 新增 `DEFAULT_GEMINI_MODEL`, `debugLogger`                             | 新增 `LlmRole`                                                         | **两者都保留** |
 
 ```typescript
-// baseLlmClient.ts - generateJsonForOpenAI 适配 LlmRole
-// 原有代码缺少第三个 role 参数
-const apiCall = () =>
-  this.contentGenerator.generateContent(
-    { model, config: requestConfig, contents },
-    promptId,
-    role,  // ← 新增，适配 v0.30.0 接口变更
-  );
+// 合并结果示意（枚举部分）
+export enum AuthType {
+  LOGIN_WITH_GOOGLE = 'oauth-personal',
+  USE_GEMINI = 'gemini-api-key',
+  USE_VERTEX_AI = 'vertex-ai',
+  LEGACY_CLOUD_SHELL = 'cloud-shell',
+  COMPUTE_ADC = 'compute-default-credentials',
+  USE_OPENAI = 'openai', // ← aioncli 保留
+  USE_ANTHROPIC = 'anthropic', // ← aioncli 保留
+  USE_BEDROCK = 'bedrock', // ← aioncli 保留
+}
 
-// validateNonInterActiveAuth.ts - 移除导入冲突
-// 上游将 getAuthTypeFromEnv 移至 core，但不含 Bedrock/OpenAI 检测
-// 保留本地扩展版本，改 AuthType 为值导入（非 type 导入）
-import { AuthType, debugLogger, OutputFormat, ExitCodes } from '@google/gemini-cli-core';
-// 本地函数包含 AWS_ACCESS_KEY_ID/AWS_PROFILE/OPENAI_API_KEY 检测
+// 合并结果示意（接口部分）
+export interface ContentGenerator {
+  generateContent(
+    request: GenerateContentParameters,
+    userPromptId: string,
+    role: LlmRole, // ← 上游新增，接受
+  ): Promise<GenerateContentResponse>;
+  // ...
+}
 ```
+
+##### 2.2 `baseLlmClient.ts` — 双方都大改
+
+这是最复杂的合并，因为双方在同一个文件的不同层面都做了深度修改：
+
+| 区域                      | 我们的改动                                                  | 上游的改动                                                  | 解决方式                        |
+| ------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------- |
+| `generateJson()` 入口     | 新增 OpenAI 分支跳转 `generateJsonForOpenAI()`              | 新增 `role: LlmRole` 参数解构和传递                         | **两者都保留**                  |
+| `generateJsonForOpenAI()` | 整个方法（~120 行），用工具调用模拟 JSON Schema             | 不存在                                                      | **保留我们的**，内部也传 `role` |
+| `_generateWithRetry()`    | 未改动                                                      | 新增 `role` 参数，传给 `contentGenerator.generateContent()` | **接受上游**                    |
+| import `AuthType`         | 从 `type` 改为值 import（运行时需要值比较）                 | 保持 `type` import                                          | **保留我们的**                  |
+| import 新增               | `Tool`, `FunctionDeclaration`, `Schema`, `getFunctionCalls` | `LlmRole`                                                   | **两者都保留**                  |
+
+```typescript
+// 合并关键点：generateJson 方法入口
+async generateJson(options: GenerateJsonOptions): Promise<Record<string, unknown>> {
+  const { modelConfigKey, contents, schema, abortSignal,
+    systemInstruction, promptId, role, maxAttempts } = options;
+  //                                  ^^^^ 上游新增
+
+  // aioncli 保留：OpenAI 分支跳转
+  const authType = this.config.getContentGeneratorConfig()?.authType;
+  if (authType === AuthType.USE_OPENAI) {
+    return this.generateJsonForOpenAI(options);  // options 内含 role
+  }
+  // 以下为原有 Gemini 逻辑 + 上游的 role 传递...
+}
+```
+
+##### 2.3 `validateNonInterActiveAuth.ts` — 最棘手的冲突
+
+这个文件冲突最棘手，因为上游和我们对同一个函数做了**完全相反**的操作：
+
+| 区域                        | 我们的改动                                 | 上游的改动                                                     | 解决方式                         |
+| --------------------------- | ------------------------------------------ | -------------------------------------------------------------- | -------------------------------- |
+| `getAuthTypeFromEnv()` 函数 | 在本地函数中**追加** Bedrock + OpenAI 检测 | **删除**整个本地函数，改为从 core 导入                         | **拒绝上游删除**，保留本地扩展版 |
+| import 语句                 | `AuthType` 作为**值** import               | `AuthType` 作为 type import + 新增 `getAuthTypeFromEnv` import | **保留我们的**                   |
+| 错误提示                    | 扩展为多行，包含 Bedrock/OpenAI 说明       | 保持单行                                                       | **保留我们的**                   |
+
+**为什么拒绝上游删除**：上游将 `getAuthTypeFromEnv()`
+移至 core 包，但 core 版本**只包含 Google 的三种认证类型**（OAuth、Vertex
+AI、API
+Key），不包含我们新增的 Bedrock/OpenAI/Anthropic 检测。如果接受上游删除，多模型认证将失效。
+
+```typescript
+// 上游想改为：
+import { getAuthTypeFromEnv } from '@google/gemini-cli-core';  // 只有 Google 类型
+
+// 我们保留本地版本：
+function getAuthTypeFromEnv(): AuthType | undefined {
+  // Google 类型（与 core 版一致）
+  if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') return AuthType.LOGIN_WITH_GOOGLE;
+  if (process.env['GOOGLE_GENAI_USE_VERTEXAI'] === 'true') return AuthType.USE_VERTEX_AI;
+  if (process.env['GEMINI_API_KEY']) return AuthType.USE_GEMINI;
+  // aioncli 扩展（core 版没有的）
+  if (process.env['AWS_ACCESS_KEY_ID'] || ...) return AuthType.USE_BEDROCK;
+  if (process.env['OPENAI_API_KEY']) return AuthType.USE_OPENAI;
+  if (process.env['ANTHROPIC_API_KEY']) return AuthType.USE_ANTHROPIC;
+  return undefined;
+}
+```
+
+##### 2.4 `models.ts` — 自动合并
+
+双方改动在文件不同位置，无实际冲突：
+
+| 区域                  | 我们的改动                      | 上游的改动                                         |
+| --------------------- | ------------------------------- | -------------------------------------------------- |
+| 文件末尾              | Bedrock 模型区域映射（~140 行） | 无                                                 |
+| `isGemini3Model` 之后 | 无                              | 新增 `isCustomModel()`, `supportsModernFeatures()` |
+
+##### 2.5 `auth.ts` — 仅我们改
+
+上游未修改此文件，我们新增了 `USE_BEDROCK` 和 `USE_OPENAI`
+验证分支，纯追加无冲突。
+
+##### 2.6 `package.json` — 包名与依赖
+
+| 字段             | 解决方式                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `name`           | 保留 `@office-ai/aioncli-core`（上游为 `@google/gemini-cli-core`）                                                     |
+| `version`        | 接受上游 `0.30.0`                                                                                                      |
+| `repository.url` | 保留 `iOfficeAI/aioncli`                                                                                               |
+| 依赖新增         | 保留我们的 `@anthropic-ai/sdk`, `@aws-sdk/client-bedrock-runtime`, `openai`, `tiktoken`；接受上游的 OpenTelemetry 升级 |
+
+#### 3. 合并后修复提交
+
+合并完成后，针对接口变更进行了两个修复提交：
+
+##### 3.1 `e6dc35e` — fix(core): add LlmRole parameter to custom ContentGenerator adapters
+
+v0.30.0 的 `ContentGenerator` 接口新增了 `role: LlmRole`
+第三参数，但三个自定义适配器未同步更新：
+
+```typescript
+// openaiContentGenerator.ts / anthropicContentGenerator.ts / bedrockContentGenerator.ts
+// 修复前（2 个参数，与接口不匹配）
+async generateContent(request, userPromptId): Promise<...>
+
+// 修复后（3 个参数）
+async generateContent(request, userPromptId, _role?: LlmRole): Promise<...>
+```
+
+同时修复 `openaiContentGenerator.test.ts`
+中 OpenRouter 请求头测试，将 qwen-code 残留的 `HTTP-Referer` 和 `X-Title`
+改为 aioncli 品牌值。
+
+##### 3.2 `ab76144` — fix(cli): env vars override stored OAuth for non-interactive multi-model auth
+
+测试发现：当用户已缓存 Google
+OAuth 凭据（`selectedType: "oauth-personal"`）时，即使设置了 `OPENAI_API_KEY`
+环境变量，CLI 仍会走 Google OAuth 路径导致 403 错误。
+
+**根因**：`validateNonInteractiveAuth` 中
+`effectiveAuthType = configuredAuthType || getAuthTypeFromEnv()`
+优先使用了存储的 `configuredAuthType`。
+
+**修复**：反转优先级，让环境变量优先于存储设置：
+
+```typescript
+// 修复前
+const effectiveAuthType = configuredAuthType || getAuthTypeFromEnv();
+
+// 修复后
+const envAuthType = getAuthTypeFromEnv();
+const effectiveAuthType = envAuthType || configuredAuthType;
+```
+
+同时新增 `ANTHROPIC_API_KEY` 检测和 `auth.ts` 中的 Anthropic 验证分支。
 
 #### 3. 版本与依赖更新
 
-| 包名 | 版本 | 说明 |
-|------|------|------|
-| `@office-ai/aioncli-core` | 0.30.0 | 保持自定义包名 |
-| `@google/gemini-cli` | 0.30.0 | CLI 包 |
-| `@google/gemini-cli-a2a-server` | 0.30.0 | A2A 服务器 |
-| `@google/gemini-cli-sdk` | 0.30.0 | 新增 SDK 包 |
-| `@google/gemini-cli-test-utils` | 0.30.0 | 测试工具 |
-| `vscode-ide-companion` | 0.30.0 | VSCode 扩展 |
+| 包名                            | 版本   | 说明           |
+| ------------------------------- | ------ | -------------- |
+| `@office-ai/aioncli-core`       | 0.30.0 | 保持自定义包名 |
+| `@google/gemini-cli`            | 0.30.0 | CLI 包         |
+| `@google/gemini-cli-a2a-server` | 0.30.0 | A2A 服务器     |
+| `@google/gemini-cli-sdk`        | 0.30.0 | 新增 SDK 包    |
+| `@google/gemini-cli-test-utils` | 0.30.0 | 测试工具       |
+| `vscode-ide-companion`          | 0.30.0 | VSCode 扩展    |
 
 **新增上游依赖**：`systeminformation`、`ws`（WebSocket）
 
@@ -1757,12 +1897,12 @@ import { AuthType, debugLogger, OutputFormat, ExitCodes } from '@google/gemini-c
 
 #### 4. 测试验证结果
 
-| 包 | 文件数 | 用例数 | 结果 |
-|----|--------|--------|------|
-| core | 258 | 4935 | 251 passed / 7 failed（36 用例失败）|
-| cli | 376 | 5288 | 全部通过 |
-| sdk | 4 | 15 | 3 passed / 1 failed（预存问题）|
-| vscode | 3 | 41 | 全部通过 |
+| 包     | 文件数 | 用例数 | 结果                                 |
+| ------ | ------ | ------ | ------------------------------------ |
+| core   | 258    | 4935   | 251 passed / 7 failed（36 用例失败） |
+| cli    | 376    | 5288   | 全部通过                             |
+| sdk    | 4      | 15     | 3 passed / 1 failed（预存问题）      |
+| vscode | 3      | 41     | 全部通过                             |
 
 **Core 残余失败分析**（均为预存问题，非本次合并引入）：
 
@@ -1775,10 +1915,14 @@ import { AuthType, debugLogger, OutputFormat, ExitCodes } from '@google/gemini-c
 
 #### 5. 合并后需注意的兼容性要点
 
-1. **LlmRole 传递**：所有调用 `contentGenerator.generateContent()` 的地方都需要传递第三个 `role` 参数，`openaiContentGenerator.ts` 中已有的调用点需要在后续维护中注意
-2. **supportsModernFeatures**：该函数对非 Gemini 模型（如 OpenAI/Claude）默认返回 `true`（通过 `isCustomModel` 判断），这与 aioncli 的多模型策略一致
+1. **LlmRole 传递**：所有调用 `contentGenerator.generateContent()`
+   的地方都需要传递第三个 `role` 参数，`openaiContentGenerator.ts`
+   中已有的调用点需要在后续维护中注意
+2. **supportsModernFeatures**：该函数对非 Gemini 模型（如 OpenAI/Claude）默认返回
+   `true`（通过 `isCustomModel` 判断），这与 aioncli 的多模型策略一致
 3. **getAuthTypeFromEnv 双重存在**：Core 包和 CLI 包各有一份，CLI 版本包含 Bedrock/OpenAI 扩展。后续可考虑统一至 Core 包
-4. **SDK 包**：新增的 `packages/sdk` 包暂未做 aioncli 适配，如需使用需要检查与 OpenAI 适配器的兼容性
+4. **SDK 包**：新增的 `packages/sdk`
+   包暂未做 aioncli 适配，如需使用需要检查与 OpenAI 适配器的兼容性
 
 ---
 
