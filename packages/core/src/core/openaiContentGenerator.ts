@@ -165,6 +165,27 @@ export class OpenAIContentGenerator implements ContentGenerator {
   }
 
   /**
+   * Check if stream_options should be included in streaming requests.
+   * Some providers (e.g. Cerebras) strictly validate request parameters
+   * and return 422 for unknown fields like stream_options.
+   * Default: include stream_options (most OpenAI-compatible providers support it).
+   */
+  private shouldIncludeStreamOptions(): boolean {
+    const baseURL = this.client?.baseURL || '';
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(baseURL).hostname;
+    } catch (_e) {
+      return true; // Default to including stream_options
+    }
+    // Providers known to reject stream_options with 422
+    const strictProviders = ['api.cerebras.ai'];
+    return !strictProviders.some(
+      (h) => hostname === h || hostname!.endsWith('.' + h),
+    );
+  }
+
+  /**
    * Check if metadata should be included in the request
    * Only include metadata for specific providers that support it
    */
@@ -431,7 +452,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
         messages,
         ...samplingParams,
         stream: true,
-        stream_options: { include_usage: true },
+        ...(this.shouldIncludeStreamOptions() && {
+          stream_options: { include_usage: true },
+        }),
         ...(metadata && { metadata }),
       };
 
