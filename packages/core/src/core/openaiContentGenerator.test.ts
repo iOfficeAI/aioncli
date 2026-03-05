@@ -388,8 +388,72 @@ describe('OpenAIContentGenerator', () => {
           temperature: 0.7, // From config sampling params (higher priority)
           max_tokens: 1000, // From config sampling params (higher priority)
           top_p: 0.9,
-        }),
+          }),
       );
+    });
+
+    it('should omit store for strict providers like Cerebras', async () => {
+      vi.stubEnv('OPENAI_BASE_URL', 'https://api.cerebras.ai/v1');
+      generator = new OpenAIContentGenerator('test-key', 'gpt-4', mockConfig);
+      mockOpenAIClient.baseURL = 'https://api.cerebras.ai/v1';
+
+      const mockResponse = {
+        id: 'chatcmpl-123',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Response' },
+            finish_reason: 'stop',
+          },
+        ],
+        created: 1677652288,
+        model: 'gpt-4',
+      };
+      mockOpenAIClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const request: GenerateContentParameters = {
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        model: 'gpt-4',
+      };
+
+      await generator.generateContent(request, 'test-prompt-id');
+
+      const createCall =
+        mockOpenAIClient.chat.completions.create.mock.calls[0]?.[0];
+      expect(createCall).toBeDefined();
+      expect(createCall).not.toHaveProperty('store');
+    });
+
+    it('should include store for regular OpenAI providers on GPT models', async () => {
+      vi.stubEnv('OPENAI_BASE_URL', 'https://api.openai.com/v1');
+      generator = new OpenAIContentGenerator('test-key', 'gpt-4', mockConfig);
+      mockOpenAIClient.baseURL = 'https://api.openai.com/v1';
+
+      const mockResponse = {
+        id: 'chatcmpl-123',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'Response' },
+            finish_reason: 'stop',
+          },
+        ],
+        created: 1677652288,
+        model: 'gpt-4',
+      };
+      mockOpenAIClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const request: GenerateContentParameters = {
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        model: 'gpt-4',
+      };
+
+      await generator.generateContent(request, 'test-prompt-id');
+
+      const createCall =
+        mockOpenAIClient.chat.completions.create.mock.calls[0]?.[0];
+      expect(createCall).toBeDefined();
+      expect(createCall?.store).toBe(true);
     });
   });
 
@@ -569,6 +633,89 @@ describe('OpenAIContentGenerator', () => {
           ]);
         }
       }
+    });
+
+    it('should omit stream_options and store for strict providers like Cerebras', async () => {
+      vi.stubEnv('OPENAI_BASE_URL', 'https://api.cerebras.ai/v1');
+      generator = new OpenAIContentGenerator('test-key', 'gpt-4', mockConfig);
+      mockOpenAIClient.baseURL = 'https://api.cerebras.ai/v1';
+
+      mockOpenAIClient.chat.completions.create.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            id: 'chatcmpl-123',
+            choices: [
+              {
+                index: 0,
+                delta: { content: 'ok' },
+                finish_reason: 'stop',
+              },
+            ],
+            created: 1677652288,
+          };
+        },
+      });
+
+      const request: GenerateContentParameters = {
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        model: 'gpt-4',
+      };
+
+      const stream = await generator.generateContentStream(
+        request,
+        'test-prompt-id',
+      );
+      for await (const _response of stream) {
+        // Exhaust stream
+      }
+
+      const createCall =
+        mockOpenAIClient.chat.completions.create.mock.calls[0]?.[0];
+      expect(createCall).toBeDefined();
+      expect(createCall).not.toHaveProperty('stream_options');
+      expect(createCall).not.toHaveProperty('store');
+    });
+
+    it('should include stream_options and store for regular OpenAI providers', async () => {
+      vi.stubEnv('OPENAI_BASE_URL', 'https://api.openai.com/v1');
+      generator = new OpenAIContentGenerator('test-key', 'gpt-4', mockConfig);
+      mockOpenAIClient.baseURL = 'https://api.openai.com/v1';
+
+      mockOpenAIClient.chat.completions.create.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            id: 'chatcmpl-123',
+            choices: [
+              {
+                index: 0,
+                delta: { content: 'ok' },
+                finish_reason: 'stop',
+              },
+            ],
+            created: 1677652288,
+          };
+        },
+      });
+
+      const request: GenerateContentParameters = {
+        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+        model: 'gpt-4',
+      };
+
+      const stream = await generator.generateContentStream(
+        request,
+        'test-prompt-id',
+      );
+      for await (const _response of stream) {
+        // Exhaust stream
+      }
+
+      const createCall =
+        mockOpenAIClient.chat.completions.create.mock.calls[0]?.[0];
+      expect(createCall).toBeDefined();
+      expect(createCall).toHaveProperty('stream_options');
+      expect(createCall?.stream_options).toEqual({ include_usage: true });
+      expect(createCall?.store).toBe(true);
     });
   });
 
