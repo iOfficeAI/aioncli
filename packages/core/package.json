@@ -1,14 +1,11 @@
 {
-  "name": "@office-ai/aioncli-core",
-  "version": "0.30.0",
+  "name": "@google/gemini-cli-core",
+  "version": "0.34.0",
   "description": "Gemini CLI Core",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/office-sec/aioncli.git"
-  },
-  "publishConfig": {
-    "access": "public"
+    "url": "git+https://github.com/google-gemini/gemini-cli.git"
   },
   "type": "module",
   "main": "dist/index.js",
@@ -24,13 +21,15 @@
     "dist"
   ],
   "dependencies": {
-    "@a2a-js/sdk": "^0.3.8",
+    "@a2a-js/sdk": "0.3.11",
     "@anthropic-ai/sdk": "^0.52.0",
     "@aws-sdk/client-bedrock-runtime": "^3.981.0",
+    "@bufbuild/protobuf": "^2.11.0",
     "@google-cloud/logging": "^11.2.1",
     "@google-cloud/opentelemetry-cloud-monitoring-exporter": "^0.21.0",
     "@google-cloud/opentelemetry-cloud-trace-exporter": "^3.0.0",
     "@google/genai": "1.30.0",
+    "@grpc/grpc-js": "^1.14.3",
     "@iarna/toml": "^2.2.5",
     "@joshua.litt/get-ripgrep": "^0.0.3",
     "@modelcontextprotocol/sdk": "^1.23.0",
@@ -58,6 +57,8 @@
     "ajv-formats": "^3.0.0",
     "chardet": "^2.1.0",
     "diff": "^8.0.3",
+    "dotenv": "^17.2.4",
+    "dotenv-expand": "^12.0.3",
     "fast-levenshtein": "^2.0.6",
     "fdir": "^6.4.6",
     "fzf": "^0.5.2",
@@ -66,12 +67,12 @@
     "html-to-text": "^9.0.5",
     "https-proxy-agent": "^7.0.6",
     "ignore": "^7.0.0",
+    "ipaddr.js": "^1.9.1",
     "js-yaml": "^4.1.1",
     "jsonrepair": "^3.13.0",
     "marked": "^15.0.12",
     "mime": "4.0.7",
     "mnemonist": "^0.40.3",
-    "node-fetch": "^3.3.2",
     "open": "^10.1.2",
     "openai": "^5.11.0",
     "picomatch": "^4.0.1",
@@ -80,8 +81,8 @@
     "shell-quote": "^1.8.3",
     "simple-git": "^3.28.0",
     "strip-ansi": "^7.1.0",
+    "strip-json-comments": "^3.1.1",
     "systeminformation": "^5.25.11",
-    "tiktoken": "^1.0.22",
     "tree-sitter-bash": "^0.25.0",
     "undici": "^7.10.0",
     "uuid": "^13.0.0",
@@ -97,14 +98,13 @@
     "@lydell/node-pty-win32-arm64": "1.1.0",
     "@lydell/node-pty-win32-x64": "1.1.0",
     "keytar": "^7.9.0",
-    "node-pty": "^1.0.0"
+    "node-pty": "^1.0.0",
+    "tiktoken": "^1.0.22"
   },
   "devDependencies": {
     "@google/gemini-cli-test-utils": "file:../test-utils",
     "@types/fast-levenshtein": "^0.0.4",
     "@types/js-yaml": "^4.0.9",
-    "@types/minimatch": "^5.1.2",
-    "@types/node-fetch": "^2.6.13",
     "@types/picomatch": "^4.0.1",
     "msw": "^2.3.4",
     "typescript": "^5.3.3",

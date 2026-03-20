@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { GenerateContentResponse } from '@google/genai';
-import { ApiError } from '@google/genai';
+import { ApiError, type GenerateContentResponse } from '@google/genai';
 import {
   TerminalQuotaError,
   RetryableQuotaError,
@@ -19,7 +18,7 @@ import type { RetryAvailabilityContext } from '../availability/modelPolicy.js';
 import { AuthType } from '../core/contentGenerator.js';
 
 export type { RetryAvailabilityContext };
-export const DEFAULT_MAX_ATTEMPTS = 3;
+export const DEFAULT_MAX_ATTEMPTS = 10;
 
 export interface RetryOptions {
   maxAttempts: number;
@@ -162,13 +161,17 @@ export function isRetryableError(
   if (error instanceof ApiError) {
     // Explicitly do not retry 400 (Bad Request)
     if (error.status === 400) return false;
-    return error.status === 429 || (error.status >= 500 && error.status < 600);
+    return (
+      error.status === 429 ||
+      error.status === 499 ||
+      (error.status >= 500 && error.status < 600)
+    );
   }
 
   // Check for status using helper (handles other error shapes)
   const status = getErrorStatus(error);
   if (status !== undefined) {
-    return status === 429 || (status >= 500 && status < 600);
+    return status === 429 || status === 499 || (status >= 500 && status < 600);
   }
 
   return false;
@@ -349,13 +352,18 @@ export async function retryWithBackoff<T>(
           classifiedError instanceof RetryableQuotaError &&
           classifiedError.retryDelayMs !== undefined
         ) {
+          currentDelay = Math.max(currentDelay, classifiedError.retryDelayMs);
+          // Positive jitter up to +20% while respecting server minimum delay
+          const jitter = currentDelay * 0.2 * Math.random();
+          const delayWithJitter = currentDelay + jitter;
           debugLogger.warn(
-            `Attempt ${attempt} failed: ${classifiedError.message}. Retrying after ${classifiedError.retryDelayMs}ms...`,
+            `Attempt ${attempt} failed: ${classifiedError.message}. Retrying after ${Math.round(delayWithJitter)}ms...`,
           );
           if (onRetry) {
-            onRetry(attempt, error, classifiedError.retryDelayMs);
+            onRetry(attempt, error, delayWithJitter);
           }
-          await delay(classifiedError.retryDelayMs, signal);
+          await delay(delayWithJitter, signal);
+          currentDelay = Math.min(maxDelayMs, currentDelay * 2);
           continue;
         } else {
           const errorStatus = getErrorStatus(error);

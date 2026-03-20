@@ -9,6 +9,8 @@ export const PREVIEW_GEMINI_3_1_MODEL = 'gemini-3.1-pro-preview';
 export const PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL =
   'gemini-3.1-pro-preview-customtools';
 export const PREVIEW_GEMINI_FLASH_MODEL = 'gemini-3-flash-preview';
+export const PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL =
+  'gemini-3.1-flash-lite-preview';
 export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-pro';
 export const DEFAULT_GEMINI_FLASH_MODEL = 'gemini-2.5-flash';
 export const DEFAULT_GEMINI_FLASH_LITE_MODEL = 'gemini-2.5-flash-lite';
@@ -18,6 +20,7 @@ export const VALID_GEMINI_MODELS = new Set([
   PREVIEW_GEMINI_3_1_MODEL,
   PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL,
   PREVIEW_GEMINI_FLASH_MODEL,
+  PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_GEMINI_FLASH_MODEL,
   DEFAULT_GEMINI_FLASH_LITE_MODEL,
@@ -43,38 +46,70 @@ export const DEFAULT_THINKING_MODE = 8192;
  *
  * @param requestedModel The model alias or concrete model name requested by the user.
  * @param useGemini3_1 Whether to use Gemini 3.1 Pro Preview for auto/pro aliases.
+ * @param hasAccessToPreview Whether the user has access to preview models.
  * @returns The resolved concrete model name.
  */
 export function resolveModel(
   requestedModel: string,
   useGemini3_1: boolean = false,
   useCustomToolModel: boolean = false,
+  hasAccessToPreview: boolean = true,
 ): string {
+  let resolved: string;
   switch (requestedModel) {
     case PREVIEW_GEMINI_MODEL:
     case PREVIEW_GEMINI_MODEL_AUTO:
     case GEMINI_MODEL_ALIAS_AUTO:
     case GEMINI_MODEL_ALIAS_PRO: {
       if (useGemini3_1) {
-        return useCustomToolModel
+        resolved = useCustomToolModel
           ? PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL
           : PREVIEW_GEMINI_3_1_MODEL;
+      } else {
+        resolved = PREVIEW_GEMINI_MODEL;
       }
-      return PREVIEW_GEMINI_MODEL;
+      break;
     }
     case DEFAULT_GEMINI_MODEL_AUTO: {
-      return DEFAULT_GEMINI_MODEL;
+      resolved = DEFAULT_GEMINI_MODEL;
+      break;
     }
     case GEMINI_MODEL_ALIAS_FLASH: {
-      return PREVIEW_GEMINI_FLASH_MODEL;
+      resolved = PREVIEW_GEMINI_FLASH_MODEL;
+      break;
     }
     case GEMINI_MODEL_ALIAS_FLASH_LITE: {
-      return DEFAULT_GEMINI_FLASH_LITE_MODEL;
+      resolved = DEFAULT_GEMINI_FLASH_LITE_MODEL;
+      break;
     }
     default: {
-      return requestedModel;
+      resolved = requestedModel;
+      break;
     }
   }
+
+  if (!hasAccessToPreview && isPreviewModel(resolved)) {
+    // Downgrade to stable models if user lacks preview access.
+    switch (resolved) {
+      case PREVIEW_GEMINI_FLASH_MODEL:
+        return DEFAULT_GEMINI_FLASH_MODEL;
+      case PREVIEW_GEMINI_MODEL:
+      case PREVIEW_GEMINI_3_1_MODEL:
+      case PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL:
+        return DEFAULT_GEMINI_MODEL;
+      default:
+        // Fallback for unknown preview models, preserving original logic.
+        if (resolved.includes('flash-lite')) {
+          return DEFAULT_GEMINI_FLASH_LITE_MODEL;
+        }
+        if (resolved.includes('flash')) {
+          return DEFAULT_GEMINI_FLASH_MODEL;
+        }
+        return DEFAULT_GEMINI_MODEL;
+    }
+  }
+
+  return resolved;
 }
 
 /**
@@ -136,7 +171,9 @@ export function isPreviewModel(model: string): boolean {
     model === PREVIEW_GEMINI_3_1_MODEL ||
     model === PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL ||
     model === PREVIEW_GEMINI_FLASH_MODEL ||
-    model === PREVIEW_GEMINI_MODEL_AUTO
+    model === PREVIEW_GEMINI_MODEL_AUTO ||
+    model === GEMINI_MODEL_ALIAS_AUTO ||
+    model === PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL
   );
 }
 
@@ -219,160 +256,6 @@ export function supportsMultimodalFunctionResponse(model: string): boolean {
   return model.startsWith('gemini-3-');
 }
 
-// ===== AWS Bedrock Models =====
-
-/**
- * Default Bedrock model - Claude Sonnet 4.5
- */
-export const DEFAULT_BEDROCK_MODEL =
-  'anthropic.claude-sonnet-4-5-20250929-v1:0';
-
-/**
- * Bedrock model availability by region.
- * Based on AWS Bedrock documentation (as of January 2025).
- * This mapping needs periodic updates as AWS expands model availability.
- */
-export const BEDROCK_MODEL_REGIONS: Record<string, string[]> = {
-  // Claude 4.5 models
-  'anthropic.claude-opus-4-5-20251101-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'eu-central-1',
-    'ap-southeast-1',
-    'ap-northeast-1',
-  ],
-  'anthropic.claude-sonnet-4-5-20250929-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'eu-central-1',
-    'ap-southeast-1',
-    'ap-northeast-1',
-  ],
-  'anthropic.claude-haiku-4-5-20251001-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'eu-central-1',
-    'ap-southeast-1',
-    'ap-northeast-1',
-  ],
-
-  // Claude 4 models
-  'anthropic.claude-sonnet-4-20250514-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'ap-southeast-1',
-  ],
-
-  // Claude 3.7 models
-  'anthropic.claude-3-7-sonnet-20250219-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'ap-southeast-1',
-  ],
-
-  // Claude 3.5 models
-  'anthropic.claude-3-5-sonnet-20241022-v2:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'eu-central-1',
-    'ap-southeast-1',
-    'ap-northeast-1',
-  ],
-  'anthropic.claude-3-5-sonnet-20240620-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'ap-southeast-1',
-  ],
-
-  // Claude 3 models
-  'anthropic.claude-3-opus-20240229-v1:0': ['us-east-1', 'us-west-2'],
-  'anthropic.claude-3-sonnet-20240229-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'ap-southeast-1',
-  ],
-  'anthropic.claude-3-sonnet-20240229-v1:0:28k': [
-    'us-east-1',
-    'us-west-2',
-    'ap-southeast-1',
-  ],
-  'anthropic.claude-3-sonnet-20240229-v1:0:200k': [
-    'us-east-1',
-    'us-west-2',
-    'ap-southeast-1',
-  ],
-  'anthropic.claude-3-haiku-20240307-v1:0': [
-    'us-east-1',
-    'us-west-2',
-    'eu-west-1',
-    'ap-southeast-1',
-    'ap-northeast-1',
-  ],
-};
-
-/**
- * Validate if a Bedrock model is available in the specified region.
- *
- * @param model Bedrock model ID
- * @param region AWS region
- * @returns Validation result with suggestions if not available
- */
-export function validateBedrockModelRegion(
-  model: string,
-  region: string,
-): { valid: boolean; message?: string; suggestions?: string[] } {
-  const modelRegions = BEDROCK_MODEL_REGIONS[model];
-
-  if (!modelRegions) {
-    // Unknown model - allow but warn
-    return {
-      valid: true,
-      message:
-        `Warning: Model ${model} not in known model list. ` +
-        `It may work if it's a newly released model.`,
-    };
-  }
-
-  if (!modelRegions.includes(region)) {
-    // Model not available in this region
-    return {
-      valid: false,
-      message:
-        `Model ${model} is not available in region ${region}.\n\n` +
-        `Available regions for this model:\n` +
-        modelRegions.map((r) => `  - ${r}`).join('\n') +
-        `\n\nSolutions:\n` +
-        `  1. Switch to a supported region:\n` +
-        `     export AWS_REGION="${modelRegions[0]}"\n\n` +
-        `  2. List models available in ${region}:\n` +
-        `     aws bedrock list-foundation-models --region ${region} --by-provider Anthropic`,
-      suggestions: modelRegions,
-    };
-  }
-
-  return { valid: true };
-}
-
-/**
- * Check if a model is a Bedrock model.
- */
-export function isBedrockModel(model: string): boolean {
-  return (
-    model.startsWith('anthropic.') ||
-    model.startsWith('amazon.') ||
-    model.startsWith('meta.') ||
-    model.startsWith('mistral.')
-  );
-}
-
 /**
  * Checks if the given model is considered active based on the current configuration.
  *
@@ -403,4 +286,129 @@ export function isActiveModel(
       model !== PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL
     );
   }
+}
+
+/**
+ * Default Bedrock model - Claude Sonnet 4.5
+ */
+export const DEFAULT_BEDROCK_MODEL =
+  'anthropic.claude-sonnet-4-5-20250929-v1:0';
+
+/**
+ * Bedrock model availability by region.
+ */
+export const BEDROCK_MODEL_REGIONS: Record<string, string[]> = {
+  'anthropic.claude-opus-4-5-20251101-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+  'anthropic.claude-sonnet-4-5-20250929-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+  'anthropic.claude-haiku-4-5-20251001-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+  'anthropic.claude-sonnet-4-20250514-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+  'anthropic.claude-3-7-sonnet-20250219-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+  'anthropic.claude-3-5-sonnet-20241022-v2:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-central-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+  'anthropic.claude-3-5-sonnet-20240620-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+  'anthropic.claude-3-opus-20240229-v1:0': ['us-east-1', 'us-west-2'],
+  'anthropic.claude-3-sonnet-20240229-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+  ],
+  'anthropic.claude-3-haiku-20240307-v1:0': [
+    'us-east-1',
+    'us-west-2',
+    'eu-west-1',
+    'ap-southeast-1',
+    'ap-northeast-1',
+  ],
+};
+
+/**
+ * Validate if a Bedrock model is available in the specified region.
+ */
+export function validateBedrockModelRegion(
+  model: string,
+  region: string,
+): { valid: boolean; message?: string; suggestions?: string[] } {
+  const modelRegions = BEDROCK_MODEL_REGIONS[model];
+
+  if (!modelRegions) {
+    return {
+      valid: true,
+      message:
+        `Warning: Model ${model} not in known model list. ` +
+        `It may work if it's a newly released model.`,
+    };
+  }
+
+  if (!modelRegions.includes(region)) {
+    return {
+      valid: false,
+      message:
+        `Model ${model} is not available in region ${region}.\n\n` +
+        `Available regions for this model:\n` +
+        modelRegions.map((r) => `  - ${r}`).join('\n') +
+        `\n\nSolutions:\n` +
+        `  1. Switch to a supported region:\n` +
+        `     export AWS_REGION="${modelRegions[0]}"\n\n` +
+        `  2. List models available in ${region}:\n` +
+        `     aws bedrock list-foundation-models --region ${region} --by-provider Anthropic`,
+      suggestions: modelRegions,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Check if a model is a Bedrock model.
+ */
+export function isBedrockModel(model: string): boolean {
+  return (
+    model.startsWith('anthropic.') ||
+    model.startsWith('amazon.') ||
+    model.startsWith('meta.') ||
+    model.startsWith('mistral.')
+  );
 }

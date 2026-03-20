@@ -4,12 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Credentials, AuthClient, JWTInput } from 'google-auth-library';
 import {
   OAuth2Client,
   Compute,
   CodeChallengeMethod,
   GoogleAuth,
+  type Credentials,
+  type AuthClient,
+  type JWTInput,
 } from 'google-auth-library';
 import * as http from 'node:http';
 import url from 'node:url';
@@ -28,10 +30,6 @@ import {
 import { UserAccountManager } from '../utils/userAccountManager.js';
 import { AuthType } from '../core/contentGenerator.js';
 import readline from 'node:readline';
-
-import fetch from 'node-fetch';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-
 import { Storage } from '../config/storage.js';
 import { OAuthCredentialStorage } from './oauth-credential-storage.js';
 import { FORCE_ENCRYPTED_FILE_ENV_VAR } from '../mcp/token-storage/index.js';
@@ -49,6 +47,7 @@ import {
   exitAlternateScreen,
 } from '../utils/terminal.js';
 import { coreEvents, CoreEvent } from '../utils/events.js';
+import { getConsentForOauth } from '../utils/authConsent.js';
 
 export const authEvents = new EventEmitter();
 
@@ -87,6 +86,7 @@ const OAUTH_SCOPE = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
 ];
+
 const HTTP_REDIRECT = 301;
 const SIGN_IN_SUCCESS_URL =
   'https://developers.google.com/gemini-code-assist/auth_success_gemini';
@@ -113,13 +113,13 @@ async function initOauthClient(
   authType: AuthType,
   config: Config,
 ): Promise<AuthClient> {
-  const proxy = config.getProxy();
   const credentials = await fetchCachedCredentials();
 
   if (
     credentials &&
-    (credentials as { type?: string }).type ===
-      'external_account_authorized_user'
+    typeof credentials === 'object' &&
+    'type' in credentials &&
+    credentials.type === 'external_account_authorized_user'
   ) {
     const auth = new GoogleAuth({
       scopes: OAUTH_SCOPE,
@@ -139,7 +139,7 @@ async function initOauthClient(
     clientId: OAUTH_CLIENT_ID,
     clientSecret: OAUTH_CLIENT_SECRET,
     transporterOptions: {
-      proxy,
+      proxy: config.getProxy(),
     },
   });
   const useEncryptedStorage = getUseEncryptedStorageFlag();
@@ -151,7 +151,7 @@ async function initOauthClient(
     client.setCredentials({
       access_token: process.env['GOOGLE_CLOUD_ACCESS_TOKEN'],
     });
-    await fetchAndCacheUserInfo(client, proxy);
+    await fetchAndCacheUserInfo(client);
     return client;
   }
 
@@ -176,7 +176,7 @@ async function initOauthClient(
 
         if (!userAccountManager.getCachedGoogleAccount()) {
           try {
-            await fetchAndCacheUserInfo(client, proxy);
+            await fetchAndCacheUserInfo(client);
           } catch (error) {
             // Non-fatal, continue with existing auth.
             debugLogger.warn(
@@ -226,6 +226,13 @@ async function initOauthClient(
   }
 
   if (config.isBrowserLaunchSuppressed()) {
+    if (!config.isInteractive()) {
+      throw new FatalAuthenticationError(
+        'Manual authorization is required but the current session is non-interactive. ' +
+          'Please run the Gemini CLI in an interactive terminal to log in, ' +
+          'provide a GEMINI_API_KEY, or ensure Application Default Credentials are configured.',
+      );
+    }
     let success = false;
     const maxRetries = 2;
     // Enter alternate buffer
@@ -273,13 +280,20 @@ async function initOauthClient(
 
     await triggerPostAuthCallbacks(client.credentials);
   } else {
-    const webLogin = await authWithWeb(client, proxy);
+    // In ACP mode, we skip the interactive consent and directly open the browser
+    if (!config.getAcpMode()) {
+      const userConsent = await getConsentForOauth('');
+      if (!userConsent) {
+        throw new FatalCancellationError('Authentication cancelled by user.');
+      }
+    }
+
+    const webLogin = await authWithWeb(client);
 
     coreEvents.emit(CoreEvent.UserFeedback, {
       severity: 'info',
       message:
-        `\n\nCode Assist login required.\n` +
-        `Attempting to open authentication page in your browser.\n` +
+        `\n\nAttempting to open authentication page in your browser.\n` +
         `Otherwise navigate to:\n\n${webLogin.authUrl}\n\n\n`,
     });
     try {
@@ -340,7 +354,7 @@ async function initOauthClient(
 
       // Note that SIGINT might not get raised on Ctrl+C in raw mode
       // so we also need to look for Ctrl+C directly in stdin.
-      stdinHandler = (data) => {
+      stdinHandler = (data: Buffer) => {
         if (data.includes(0x03)) {
           reject(
             new FatalCancellationError('Authentication cancelled by user.'),
@@ -405,14 +419,24 @@ async function authWithUserCode(client: OAuth2Client): Promise<boolean> {
         '\n\n',
     );
 
-    const code = await new Promise<string>((resolve, _) => {
+    const code = await new Promise<string>((resolve, reject) => {
       const rl = readline.createInterface({
         input: process.stdin,
         output: createWorkingStdio().stdout,
         terminal: true,
       });
 
+      const timeout = setTimeout(() => {
+        rl.close();
+        reject(
+          new FatalAuthenticationError(
+            'Authorization timed out after 5 minutes.',
+          ),
+        );
+      }, 300000); // 5 minute timeout
+
       rl.question('Enter the authorization code: ', (code) => {
+        clearTimeout(timeout);
         rl.close();
         resolve(code.trim());
       });
@@ -460,18 +484,15 @@ async function authWithUserCode(client: OAuth2Client): Promise<boolean> {
   }
 }
 
-async function authWithWeb(
-  client: OAuth2Client,
-  proxy?: string,
-): Promise<OauthWebLogin> {
+async function authWithWeb(client: OAuth2Client): Promise<OauthWebLogin> {
   const port = await getAvailablePort();
   // The hostname used for the HTTP server binding (e.g., '0.0.0.0' in Docker).
-  const host = process.env['OAUTH_CALLBACK_HOST'] || 'localhost';
+  const host = process.env['OAUTH_CALLBACK_HOST'] || '127.0.0.1';
   // The `redirectUri` sent to Google's authorization server MUST use a loopback IP literal
   // (i.e., 'localhost' or '127.0.0.1'). This is a strict security policy for credentials of
   // type 'Desktop app' or 'Web application' (when using loopback flow) to mitigate
   // authorization code interception attacks.
-  const redirectUri = `http://localhost:${port}/oauth2callback`;
+  const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
   const state = crypto.randomBytes(32).toString('hex');
   const authUrl = client.generateAuthUrl({
     redirect_uri: redirectUri,
@@ -491,9 +512,10 @@ async function authWithWeb(
               'OAuth callback not received. Unexpected request: ' + req.url,
             ),
           );
+          return;
         }
         // acquire the code from the querystring, and close the web server.
-        const qs = new url.URL(req.url!, 'http://localhost:3000').searchParams;
+        const qs = new url.URL(req.url!, 'http://127.0.0.1:3000').searchParams;
         if (qs.get('error')) {
           res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
           res.end();
@@ -524,7 +546,7 @@ async function authWithWeb(
 
             // Retrieve and cache Google Account ID during authentication
             try {
-              await fetchAndCacheUserInfo(client, proxy);
+              await fetchAndCacheUserInfo(client);
             } catch (error) {
               debugLogger.warn(
                 'Failed to retrieve Google Account ID during authentication:',
@@ -603,8 +625,10 @@ export function getAvailablePort(): Promise<number> {
       }
       const server = net.createServer();
       server.listen(0, () => {
-        const address = server.address()! as net.AddressInfo;
-        port = address.port;
+        const address = server.address();
+        if (address && typeof address === 'object') {
+          port = address.port;
+        }
       });
       server.on('listening', () => {
         server.close();
@@ -634,6 +658,7 @@ async function fetchCachedCredentials(): Promise<
   for (const keyFile of pathsToTry) {
     try {
       const keyFileString = await fs.readFile(keyFile, 'utf-8');
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
       return JSON.parse(keyFileString);
     } catch (error) {
       // Log specific error for debugging, but continue trying other paths
@@ -668,23 +693,20 @@ export async function clearCachedCredentialFile() {
   }
 }
 
-async function fetchAndCacheUserInfo(
-  client: OAuth2Client,
-  proxy?: string,
-): Promise<{ email: string } | void> {
+async function fetchAndCacheUserInfo(client: OAuth2Client): Promise<void> {
   try {
     const { token } = await client.getAccessToken();
     if (!token) {
       return;
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- TODO: Migrate to safeFetch for SSRF protection
     const response = await fetch(
       'https://www.googleapis.com/oauth2/v2/userinfo',
       {
         headers: {
           Authorization: `Bearer ${token}`,
         },
-        agent: proxy ? new HttpsProxyAgent(proxy) : undefined,
       },
     );
 
@@ -697,57 +719,13 @@ async function fetchAndCacheUserInfo(
       return;
     }
 
-    const userInfo = (await response.json()) as { email?: string };
-    if (userInfo.email) {
-      await userAccountManager.cacheGoogleAccount(userInfo.email);
-      return { email: userInfo.email };
-    }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const userInfo = await response.json();
+    await userAccountManager.cacheGoogleAccount(userInfo.email);
   } catch (error) {
     debugLogger.log('Error retrieving user info:', error);
   }
 }
-
-export async function getOauthInfoWithCache(
-  proxy: string,
-): Promise<{ email: string } | void> {
-  const client = new OAuth2Client({
-    clientId: OAUTH_CLIENT_ID,
-    clientSecret: OAUTH_CLIENT_SECRET,
-    transporterOptions: {
-      proxy,
-    },
-  });
-
-  if (
-    process.env['GOOGLE_GENAI_USE_GCA'] &&
-    process.env['GOOGLE_CLOUD_ACCESS_TOKEN']
-  ) {
-    client.setCredentials({
-      access_token: process.env['GOOGLE_CLOUD_ACCESS_TOKEN'],
-    });
-    return fetchAndCacheUserInfo(client, proxy);
-  }
-
-  client.on('tokens', async (tokens: Credentials) => {
-    await cacheCredentials(tokens);
-  });
-
-  // If there are cached creds on disk, they always take precedence
-  const cachedCreds = await fetchCachedCredentials();
-  if (cachedCreds) {
-    client.setCredentials(cachedCreds);
-    // Found valid cached credentials.
-    // Check if we need to retrieve Google Account ID or Email
-    const cachedGoogleAccount = userAccountManager.getCachedGoogleAccount();
-    if (!cachedGoogleAccount) {
-      return fetchAndCacheUserInfo(client, proxy);
-    }
-    console.log('Loaded cached credentials.', cachedGoogleAccount);
-    return { email: cachedGoogleAccount };
-  }
-}
-
-export const loginWithOauth = getOauthClient;
 
 // Helper to ensure test isolation
 export function resetOauthClientForTesting() {

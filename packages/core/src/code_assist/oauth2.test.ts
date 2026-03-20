@@ -4,9 +4,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Credentials } from 'google-auth-library';
-import type { Mock } from 'vitest';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  OAuth2Client,
+  Compute,
+  GoogleAuth,
+  type Credentials,
+} from 'google-auth-library';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeEach,
+  afterEach,
+  type Mock,
+} from 'vitest';
 import {
   getOauthClient,
   resetOauthClientForTesting,
@@ -15,7 +27,6 @@ import {
   authEvents,
 } from './oauth2.js';
 import { UserAccountManager } from '../utils/userAccountManager.js';
-import { OAuth2Client, Compute, GoogleAuth } from 'google-auth-library';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import http from 'node:http';
@@ -26,16 +37,29 @@ import { AuthType } from '../core/contentGenerator.js';
 import type { Config } from '../config/config.js';
 import readline from 'node:readline';
 import { FORCE_ENCRYPTED_FILE_ENV_VAR } from '../mcp/token-storage/index.js';
-import { GEMINI_DIR } from '../utils/paths.js';
+import { GEMINI_DIR, homedir as pathsHomedir } from '../utils/paths.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import { writeToStdout } from '../utils/stdio.js';
-import { FatalCancellationError } from '../utils/errors.js';
+import {
+  FatalCancellationError,
+  FatalAuthenticationError,
+} from '../utils/errors.js';
 import process from 'node:process';
+import { coreEvents } from '../utils/events.js';
+import { isHeadlessMode } from '../utils/headless.js';
 
-vi.mock('os', async (importOriginal) => {
-  const os = await importOriginal<typeof import('os')>();
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
   return {
-    ...os,
+    ...actual,
+    homedir: vi.fn(),
+  };
+});
+
+vi.mock('../utils/paths.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/paths.js')>();
+  return {
+    ...actual,
     homedir: vi.fn(),
   };
 });
@@ -45,6 +69,9 @@ vi.mock('http');
 vi.mock('open');
 vi.mock('crypto');
 vi.mock('node:readline');
+vi.mock('../utils/headless.js', () => ({
+  isHeadlessMode: vi.fn(),
+}));
 vi.mock('../utils/browser.js', () => ({
   shouldAttemptBrowserLaunch: () => true,
 }));
@@ -82,12 +109,27 @@ const mockConfig = {
   getNoBrowser: () => false,
   getProxy: () => 'http://test.proxy.com:8080',
   isBrowserLaunchSuppressed: () => false,
+  getAcpMode: () => false,
+  isInteractive: () => true,
 } as unknown as Config;
 
 // Mock fetch globally
 global.fetch = vi.fn();
 
 describe('oauth2', () => {
+  beforeEach(() => {
+    vi.mocked(isHeadlessMode).mockReturnValue(false);
+    (readline.createInterface as Mock).mockReturnValue({
+      question: vi.fn((_query, callback) => callback('')),
+      close: vi.fn(),
+      on: vi.fn(),
+    });
+    vi.spyOn(coreEvents, 'listenerCount').mockReturnValue(1);
+    vi.spyOn(coreEvents, 'emitConsentRequest').mockImplementation((payload) => {
+      payload.onConfirm(true);
+    });
+  });
+
   describe('with encrypted flag false', () => {
     let tempHomeDir: string;
 
@@ -97,6 +139,7 @@ describe('oauth2', () => {
         path.join(os.tmpdir(), 'gemini-cli-test-home-'),
       );
       vi.mocked(os.homedir).mockReturnValue(tempHomeDir);
+      vi.mocked(pathsHomedir).mockReturnValue(tempHomeDir);
     });
     afterEach(() => {
       fs.rmSync(tempHomeDir, { recursive: true, force: true });
@@ -207,7 +250,7 @@ describe('oauth2', () => {
       expect(open).toHaveBeenCalledWith(mockAuthUrl);
       expect(mockGetToken).toHaveBeenCalledWith({
         code: mockCode,
-        redirect_uri: `http://localhost:${capturedPort}/oauth2callback`,
+        redirect_uri: `http://127.0.0.1:${capturedPort}/oauth2callback`,
       });
       expect(mockSetCredentials).toHaveBeenCalledWith(mockTokens);
 
@@ -277,11 +320,31 @@ describe('oauth2', () => {
       await eventPromise;
     });
 
+    it('should throw FatalAuthenticationError in non-interactive session when manual auth is required', async () => {
+      const mockConfigNonInteractive = {
+        getNoBrowser: () => true,
+        getProxy: () => 'http://test.proxy.com:8080',
+        isBrowserLaunchSuppressed: () => true,
+        isInteractive: () => false,
+      } as unknown as Config;
+
+      await expect(
+        getOauthClient(AuthType.LOGIN_WITH_GOOGLE, mockConfigNonInteractive),
+      ).rejects.toThrow(FatalAuthenticationError);
+
+      await expect(
+        getOauthClient(AuthType.LOGIN_WITH_GOOGLE, mockConfigNonInteractive),
+      ).rejects.toThrow(
+        'Manual authorization is required but the current session is non-interactive.',
+      );
+    });
+
     it('should perform login with user code', async () => {
       const mockConfigWithNoBrowser = {
         getNoBrowser: () => true,
         getProxy: () => 'http://test.proxy.com:8080',
         isBrowserLaunchSuppressed: () => true,
+        isInteractive: () => true,
       } as unknown as Config;
 
       const mockCodeVerifier = {
@@ -352,6 +415,7 @@ describe('oauth2', () => {
         getNoBrowser: () => true,
         getProxy: () => 'http://test.proxy.com:8080',
         isBrowserLaunchSuppressed: () => true,
+        isInteractive: () => true,
       } as unknown as Config;
 
       const mockCodeVerifier = {
@@ -909,6 +973,70 @@ describe('oauth2', () => {
         );
       });
 
+      it('should handle unexpected requests (like /favicon.ico) without crashing', async () => {
+        const mockAuthUrl = 'https://example.com/auth';
+        const mockOAuth2Client = {
+          generateAuthUrl: vi.fn().mockReturnValue(mockAuthUrl),
+          on: vi.fn(),
+        } as unknown as OAuth2Client;
+        vi.mocked(OAuth2Client).mockImplementation(() => mockOAuth2Client);
+
+        vi.mocked(open).mockImplementation(
+          async () => ({ on: vi.fn() }) as never,
+        );
+
+        let requestCallback!: http.RequestListener;
+        let serverListeningCallback: (value: unknown) => void;
+        const serverListeningPromise = new Promise(
+          (resolve) => (serverListeningCallback = resolve),
+        );
+
+        const mockHttpServer = {
+          listen: vi.fn(
+            (_port: number, _host: string, callback?: () => void) => {
+              if (callback) callback();
+              serverListeningCallback(undefined);
+            },
+          ),
+          close: vi.fn(),
+          on: vi.fn(),
+          address: () => ({ port: 3000 }),
+        };
+        (http.createServer as Mock).mockImplementation((cb) => {
+          requestCallback = cb;
+          return mockHttpServer as unknown as http.Server;
+        });
+
+        const clientPromise = getOauthClient(
+          AuthType.LOGIN_WITH_GOOGLE,
+          mockConfig,
+        );
+        await serverListeningPromise;
+
+        // Simulate an unexpected request, like a browser requesting a favicon
+        const mockReq = {
+          url: '/favicon.ico',
+        } as http.IncomingMessage;
+        const mockRes = {
+          writeHead: vi.fn(),
+          end: vi.fn(),
+        } as unknown as http.ServerResponse;
+
+        await expect(async () => {
+          requestCallback(mockReq, mockRes);
+          await clientPromise;
+        }).rejects.toThrow(
+          'OAuth callback not received. Unexpected request: /favicon.ico',
+        );
+
+        // Assert that we correctly redirected to the failure page
+        expect(mockRes.writeHead).toHaveBeenCalledWith(301, {
+          Location:
+            'https://developers.google.com/gemini-code-assist/auth_failure_gemini',
+        });
+        expect(mockRes.end).toHaveBeenCalled();
+      });
+
       it('should handle token exchange failure with descriptive error', async () => {
         const mockAuthUrl = 'https://example.com/auth';
         const mockCode = 'test-code';
@@ -1068,6 +1196,7 @@ describe('oauth2', () => {
           getNoBrowser: () => true,
           getProxy: () => 'http://test.proxy.com:8080',
           isBrowserLaunchSuppressed: () => true,
+          isInteractive: () => true,
         } as unknown as Config;
 
         const mockOAuth2Client = {
@@ -1137,15 +1266,10 @@ describe('oauth2', () => {
           () => mockHttpServer as unknown as http.Server,
         );
 
-        // Mock process.on to immediately trigger SIGINT
+        // Mock process.on to capture SIGINT handler
         const processOnSpy = vi
           .spyOn(process, 'on')
-          .mockImplementation((event, listener: () => void) => {
-            if (event === 'SIGINT') {
-              listener();
-            }
-            return process;
-          });
+          .mockImplementation(() => process);
 
         const processRemoveListenerSpy = vi.spyOn(process, 'removeListener');
 
@@ -1153,6 +1277,24 @@ describe('oauth2', () => {
           AuthType.LOGIN_WITH_GOOGLE,
           mockConfig,
         );
+
+        // Wait for the SIGINT handler to be registered
+        let sigIntHandler: (() => void) | undefined;
+        await vi.waitFor(() => {
+          const sigintCall = processOnSpy.mock.calls.find(
+            (call) => call[0] === 'SIGINT',
+          );
+          sigIntHandler = sigintCall?.[1] as (() => void) | undefined;
+          if (!sigIntHandler)
+            throw new Error('SIGINT handler not registered yet');
+        });
+
+        expect(sigIntHandler).toBeDefined();
+
+        // Trigger SIGINT
+        if (sigIntHandler) {
+          sigIntHandler();
+        }
 
         await expect(clientPromise).rejects.toThrow(FatalCancellationError);
         expect(processRemoveListenerSpy).toHaveBeenCalledWith(
@@ -1188,16 +1330,10 @@ describe('oauth2', () => {
           () => mockHttpServer as unknown as http.Server,
         );
 
-        // Spy on process.stdin.on and immediately trigger Ctrl+C
-        const stdinOnSpy = vi.spyOn(process.stdin, 'on').mockImplementation(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (event: any, listener: any) => {
-            if (event === 'data') {
-              listener(Buffer.from([0x03]));
-            }
-            return process.stdin;
-          },
-        );
+        // Spy on process.stdin.on to capture data handler
+        const stdinOnSpy = vi
+          .spyOn(process.stdin, 'on')
+          .mockImplementation(() => process.stdin);
 
         const stdinRemoveListenerSpy = vi.spyOn(
           process.stdin,
@@ -1209,6 +1345,23 @@ describe('oauth2', () => {
           mockConfig,
         );
 
+        // Wait for the stdin handler to be registered
+        let dataHandler: ((data: Buffer) => void) | undefined;
+        await vi.waitFor(() => {
+          const dataCall = stdinOnSpy.mock.calls.find(
+            (call: [string, ...unknown[]]) => call[0] === 'data',
+          );
+          dataHandler = dataCall?.[1] as ((data: Buffer) => void) | undefined;
+          if (!dataHandler) throw new Error('stdin handler not registered yet');
+        });
+
+        expect(dataHandler).toBeDefined();
+
+        // Trigger Ctrl+C
+        if (dataHandler) {
+          dataHandler(Buffer.from([0x03]));
+        }
+
         await expect(clientPromise).rejects.toThrow(FatalCancellationError);
         expect(stdinRemoveListenerSpy).toHaveBeenCalledWith(
           'data',
@@ -1217,6 +1370,18 @@ describe('oauth2', () => {
 
         stdinOnSpy.mockRestore();
         stdinRemoveListenerSpy.mockRestore();
+      });
+
+      it('should throw FatalCancellationError when consent is denied', async () => {
+        vi.spyOn(coreEvents, 'emitConsentRequest').mockImplementation(
+          (payload) => {
+            payload.onConfirm(false);
+          },
+        );
+
+        await expect(
+          getOauthClient(AuthType.LOGIN_WITH_GOOGLE, mockConfig),
+        ).rejects.toThrow(FatalCancellationError);
       });
     });
 
@@ -1309,7 +1474,8 @@ describe('oauth2', () => {
       tempHomeDir = fs.mkdtempSync(
         path.join(os.tmpdir(), 'gemini-cli-test-home-'),
       );
-      (os.homedir as Mock).mockReturnValue(tempHomeDir);
+      vi.mocked(os.homedir).mockReturnValue(tempHomeDir);
+      vi.mocked(pathsHomedir).mockReturnValue(tempHomeDir);
     });
 
     afterEach(() => {

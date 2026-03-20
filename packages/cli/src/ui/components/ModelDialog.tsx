@@ -5,12 +5,13 @@
  */
 
 import type React from 'react';
-import { useCallback, useContext, useMemo, useState } from 'react';
+import { useCallback, useContext, useMemo, useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import {
   PREVIEW_GEMINI_MODEL,
   PREVIEW_GEMINI_3_1_MODEL,
   PREVIEW_GEMINI_FLASH_MODEL,
+  PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL,
   PREVIEW_GEMINI_MODEL_AUTO,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_GEMINI_FLASH_MODEL,
@@ -21,6 +22,8 @@ import {
   getDisplayString,
   AuthType,
   PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL,
+  isProModel,
+  UserTierId,
 } from '@google/gemini-cli-core';
 import { useKeypress } from '../hooks/useKeypress.js';
 import { theme } from '../semantic-colors.js';
@@ -35,8 +38,25 @@ interface ModelDialogProps {
 export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   const config = useContext(ConfigContext);
   const settings = useSettings();
-  const [view, setView] = useState<'main' | 'manual'>('main');
+  const [hasAccessToProModel, setHasAccessToProModel] = useState<boolean>(
+    () => !(config?.getProModelNoAccessSync() ?? false),
+  );
+  const [view, setView] = useState<'main' | 'manual'>(() =>
+    config?.getProModelNoAccessSync() ? 'manual' : 'main',
+  );
   const [persistMode, setPersistMode] = useState(false);
+
+  useEffect(() => {
+    async function checkAccess() {
+      if (!config) return;
+      const noAccess = await config.getProModelNoAccess();
+      setHasAccessToProModel(!noAccess);
+      if (noAccess) {
+        setView('manual');
+      }
+    }
+    void checkAccess();
+  }, [config]);
 
   // Determine the Preferred Model (read once when the dialog opens).
   const preferredModel = config?.getModel() || DEFAULT_GEMINI_MODEL_AUTO;
@@ -66,7 +86,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   useKeypress(
     (key) => {
       if (key.name === 'escape') {
-        if (view === 'manual') {
+        if (view === 'manual' && hasAccessToProModel) {
           setView('main');
         } else {
           onClose();
@@ -94,7 +114,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
       {
         value: 'Manual',
         title: manualModelSelected
-          ? `Manual (${manualModelSelected})`
+          ? `Manual (${getDisplayString(manualModelSelected)})`
           : 'Manual',
         description: 'Manually select a model',
         key: 'Manual',
@@ -115,20 +135,21 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   }, [shouldShowPreviewModels, manualModelSelected, useGemini31]);
 
   const manualOptions = useMemo(() => {
+    const isFreeTier = config?.getUserTier() === UserTierId.FREE;
     const list = [
       {
         value: DEFAULT_GEMINI_MODEL,
-        title: DEFAULT_GEMINI_MODEL,
+        title: getDisplayString(DEFAULT_GEMINI_MODEL),
         key: DEFAULT_GEMINI_MODEL,
       },
       {
         value: DEFAULT_GEMINI_FLASH_MODEL,
-        title: DEFAULT_GEMINI_FLASH_MODEL,
+        title: getDisplayString(DEFAULT_GEMINI_FLASH_MODEL),
         key: DEFAULT_GEMINI_FLASH_MODEL,
       },
       {
         value: DEFAULT_GEMINI_FLASH_LITE_MODEL,
-        title: DEFAULT_GEMINI_FLASH_LITE_MODEL,
+        title: getDisplayString(DEFAULT_GEMINI_FLASH_LITE_MODEL),
         key: DEFAULT_GEMINI_FLASH_LITE_MODEL,
       },
     ];
@@ -142,21 +163,43 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
         ? PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL
         : previewProModel;
 
-      list.unshift(
+      const previewOptions = [
         {
           value: previewProValue,
-          title: previewProModel,
+          title: getDisplayString(previewProModel),
           key: previewProModel,
         },
         {
           value: PREVIEW_GEMINI_FLASH_MODEL,
-          title: PREVIEW_GEMINI_FLASH_MODEL,
+          title: getDisplayString(PREVIEW_GEMINI_FLASH_MODEL),
           key: PREVIEW_GEMINI_FLASH_MODEL,
         },
-      );
+      ];
+
+      if (isFreeTier) {
+        previewOptions.push({
+          value: PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL,
+          title: getDisplayString(PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL),
+          key: PREVIEW_GEMINI_3_1_FLASH_LITE_MODEL,
+        });
+      }
+
+      list.unshift(...previewOptions);
     }
+
+    if (!hasAccessToProModel) {
+      // Filter out all Pro models for free tier
+      return list.filter((option) => !isProModel(option.value));
+    }
+
     return list;
-  }, [shouldShowPreviewModels, useGemini31, useCustomToolModel]);
+  }, [
+    shouldShowPreviewModels,
+    useGemini31,
+    useCustomToolModel,
+    hasAccessToProModel,
+    config,
+  ]);
 
   const options = view === 'main' ? mainOptions : manualOptions;
 

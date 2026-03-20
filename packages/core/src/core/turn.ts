@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type {
-  PartListUnion,
-  GenerateContentResponse,
-  FunctionCall,
-  FunctionDeclaration,
-  FinishReason,
-  GenerateContentResponseUsageMetadata,
+import {
+  createUserContent,
+  type PartListUnion,
+  type GenerateContentResponse,
+  type FunctionCall,
+  type FunctionDeclaration,
+  type FinishReason,
+  type GenerateContentResponseUsageMetadata,
 } from '@google/genai';
 import type {
   ToolCallConfirmationDetails,
@@ -23,8 +24,7 @@ import {
   UnauthorizedError,
   toFriendlyError,
 } from '../utils/errors.js';
-import type { GeminiChat } from './geminiChat.js';
-import { InvalidStreamError } from './geminiChat.js';
+import { InvalidStreamError, type GeminiChat } from './geminiChat.js';
 import { parseThought, type ThoughtSummary } from '../utils/thoughtUtils.js';
 import type { ModelConfigKey } from '../services/modelConfigService.js';
 import { getCitations } from '../utils/generateContentResponseUtilities.js';
@@ -116,7 +116,7 @@ export interface StructuredError {
 }
 
 export interface GeminiErrorEventValue {
-  error: StructuredError;
+  error: unknown;
 }
 
 export interface GeminiFinishedEventValue {
@@ -191,6 +191,9 @@ export enum CompressionStatus {
 
   /** The compression was not necessary and no action was taken */
   NOOP,
+
+  /** The compression was skipped due to previous failure, but content was truncated to budget */
+  CONTENT_TRUNCATED,
 }
 
 export interface ChatCompressionInfo {
@@ -251,6 +254,7 @@ export class Turn {
   readonly pendingToolCalls: ToolCallRequestInfo[] = [];
   private debugResponses: GenerateContentResponse[] = [];
   private pendingCitations = new Set<string>();
+  private cachedResponseText: string | undefined = undefined;
   finishReason: FinishReason | undefined = undefined;
 
   constructor(
@@ -399,10 +403,10 @@ export class Turn {
         throw error;
       }
 
-      // Note: getHistory(true) already includes the current request (req) since it was
-      // pushed to history at the start of sendMessageStream. We don't need to add
-      // createUserContent(req) again as it would create duplicate entries in the context.
-      const contextForReport = this.chat.getHistory(/*curated*/ true);
+      const contextForReport = [
+        ...this.chat.getHistory(/*curated*/ true),
+        createUserContent(req),
+      ];
       await reportError(
         error,
         'Error when talking to Gemini API',
@@ -457,11 +461,15 @@ export class Turn {
   /**
    * Get the concatenated response text from all responses in this turn.
    * This extracts and joins all text content from the model's responses.
+   * The result is cached since this is called multiple times per turn.
    */
   getResponseText(): string {
-    return this.debugResponses
-      .map((response) => getResponseText(response))
-      .filter((text): text is string => text !== null)
-      .join(' ');
+    if (this.cachedResponseText === undefined) {
+      this.cachedResponseText = this.debugResponses
+        .map((response) => getResponseText(response))
+        .filter((text): text is string => text !== null)
+        .join(' ');
+    }
+    return this.cachedResponseText;
   }
 }

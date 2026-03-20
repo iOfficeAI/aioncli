@@ -4,21 +4,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type {
-  CountTokensResponse,
-  GenerateContentResponse,
-  GenerateContentParameters,
-  CountTokensParameters,
-  EmbedContentResponse,
-  EmbedContentParameters,
+import {
+  GoogleGenAI,
+  type CountTokensResponse,
+  type GenerateContentResponse,
+  type GenerateContentParameters,
+  type CountTokensParameters,
+  type EmbedContentResponse,
+  type EmbedContentParameters,
 } from '@google/genai';
-import { GoogleGenAI } from '@google/genai';
 import { createCodeAssistContentGenerator } from '../code_assist/codeAssist.js';
 import type { Config } from '../config/config.js';
 import { DEFAULT_GEMINI_MODEL } from '../config/models.js';
 import { loadApiKey } from './apiKeyCredentialStorage.js';
 
-import type { UserTierId } from '../code_assist/types.js';
+import type { UserTierId, GeminiUserTier } from '../code_assist/types.js';
 import { LoggingContentGenerator } from './loggingContentGenerator.js';
 import { InstallationManager } from '../utils/installationManager.js';
 import { FakeContentGenerator } from './fakeContentGenerator.js';
@@ -51,6 +51,8 @@ export interface ContentGenerator {
   userTier?: UserTierId;
 
   userTierName?: string;
+
+  paidTier?: GeminiUserTier;
 }
 
 export enum AuthType {
@@ -59,6 +61,7 @@ export enum AuthType {
   USE_VERTEX_AI = 'vertex-ai',
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
+  GATEWAY = 'gateway',
   USE_OPENAI = 'openai',
   USE_ANTHROPIC = 'anthropic',
   USE_BEDROCK = 'bedrock',
@@ -82,6 +85,12 @@ export function getAuthTypeFromEnv(): AuthType | undefined {
   if (process.env['GEMINI_API_KEY']) {
     return AuthType.USE_GEMINI;
   }
+  if (
+    process.env['CLOUD_SHELL'] === 'true' ||
+    process.env['GEMINI_CLI_USE_COMPUTE_ADC'] === 'true'
+  ) {
+    return AuthType.COMPUTE_ADC;
+  }
   return undefined;
 }
 
@@ -90,6 +99,9 @@ export type ContentGeneratorConfig = {
   apiKey?: string;
   vertexai?: boolean;
   authType?: AuthType | undefined;
+  proxy?: string | undefined;
+  baseUrl?: string;
+  customHeaders?: Record<string, string>;
   // Timeout configuration in milliseconds
   timeout?: number;
   // Maximum retries for failed requests
@@ -103,7 +115,6 @@ export type ContentGeneratorConfig = {
     temperature?: number;
     max_tokens?: number;
   };
-  proxy?: string | undefined;
   // AWS Bedrock configuration
   awsRegion?: string;
 };
@@ -111,9 +122,15 @@ export type ContentGeneratorConfig = {
 export async function createContentGeneratorConfig(
   config: Config,
   authType: AuthType | undefined,
+  apiKey?: string,
+  baseUrl?: string,
+  customHeaders?: Record<string, string>,
 ): Promise<ContentGeneratorConfig> {
   const geminiApiKey =
-    process.env['GEMINI_API_KEY'] || (await loadApiKey()) || undefined;
+    apiKey ||
+    process.env['GEMINI_API_KEY'] ||
+    (await loadApiKey()) ||
+    undefined;
   const googleApiKey = process.env['GOOGLE_API_KEY'] || undefined;
   const googleCloudProject =
     process.env['GOOGLE_CLOUD_PROJECT'] ||
@@ -128,6 +145,8 @@ export async function createContentGeneratorConfig(
     model: config.getModel() || DEFAULT_GEMINI_MODEL,
     authType,
     proxy: config?.getProxy(),
+    baseUrl,
+    customHeaders,
   };
 
   // If we are using Google auth or we are in Cloud Shell, there is nothing else to validate for now
@@ -232,9 +251,13 @@ export async function createContentGenerator(
 
     if (
       config.authType === AuthType.USE_GEMINI ||
-      config.authType === AuthType.USE_VERTEX_AI
+      config.authType === AuthType.USE_VERTEX_AI ||
+      config.authType === AuthType.GATEWAY
     ) {
       let headers: Record<string, string> = { ...baseHeaders };
+      if (config.customHeaders) {
+        headers = { ...headers, ...config.customHeaders };
+      }
       if (gcConfig?.getUsageStatisticsEnabled()) {
         const installationManager = new InstallationManager();
         const installationId = installationManager.getInstallationId();
@@ -243,7 +266,14 @@ export async function createContentGenerator(
           'x-gemini-api-privileged-user-id': `${installationId}`,
         };
       }
-      const httpOptions = { headers };
+      const httpOptions: {
+        baseUrl?: string;
+        headers: Record<string, string>;
+      } = { headers };
+
+      if (config.baseUrl) {
+        httpOptions.baseUrl = config.baseUrl;
+      }
 
       const googleGenAI = new GoogleGenAI({
         apiKey: config.apiKey === '' ? undefined : config.apiKey,

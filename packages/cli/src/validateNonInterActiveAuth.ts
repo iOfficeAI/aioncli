@@ -4,51 +4,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Config } from '@google/gemini-cli-core';
+import type { Config, AuthType } from '@google/gemini-cli-core';
 import {
-  AuthType,
   debugLogger,
   OutputFormat,
   ExitCodes,
+  getAuthTypeFromEnv,
 } from '@google/gemini-cli-core';
 import { USER_SETTINGS_PATH } from './config/settings.js';
 import { validateAuthMethod } from './config/auth.js';
 import { type LoadedSettings } from './config/settings.js';
 import { handleError } from './utils/errors.js';
 import { runExitCleanup } from './utils/cleanup.js';
-
-function getAuthTypeFromEnv(): AuthType | undefined {
-  if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
-    return AuthType.LOGIN_WITH_GOOGLE;
-  }
-  if (process.env['GOOGLE_GENAI_USE_VERTEXAI'] === 'true') {
-    return AuthType.USE_VERTEX_AI;
-  }
-  if (process.env['GEMINI_API_KEY']) {
-    return AuthType.USE_GEMINI;
-  }
-  // Check for AWS Bedrock credentials
-  // AWS SDK will automatically detect credentials from multiple sources:
-  // 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-  // 2. AWS Profile (AWS_PROFILE)
-  // 3. IAM role (for EC2/ECS/Lambda)
-  if (
-    process.env['AWS_ACCESS_KEY_ID'] ||
-    process.env['AWS_PROFILE'] ||
-    process.env['AWS_REGION']
-  ) {
-    return AuthType.USE_BEDROCK;
-  }
-  // Check for OpenAI API key
-  if (process.env['OPENAI_API_KEY']) {
-    return AuthType.USE_OPENAI;
-  }
-  // Check for Anthropic API key
-  if (process.env['ANTHROPIC_API_KEY']) {
-    return AuthType.USE_ANTHROPIC;
-  }
-  return undefined;
-}
 
 export async function validateNonInteractiveAuth(
   configuredAuthType: AuthType | undefined,
@@ -57,11 +24,7 @@ export async function validateNonInteractiveAuth(
   settings: LoadedSettings,
 ) {
   try {
-    // Environment variables take priority over stored settings for non-Google
-    // auth types (OpenAI, Bedrock). This allows users to switch providers by
-    // setting env vars without needing to clear their stored Google OAuth config.
-    const envAuthType = getAuthTypeFromEnv();
-    const effectiveAuthType = envAuthType || configuredAuthType;
+    const effectiveAuthType = configuredAuthType || getAuthTypeFromEnv();
 
     const enforcedType = settings.merged.security.auth.enforcedType;
     if (enforcedType && effectiveAuthType !== enforcedType) {
@@ -72,12 +35,7 @@ export async function validateNonInteractiveAuth(
     }
 
     if (!effectiveAuthType) {
-      const message = `Please set an Auth method in your ${USER_SETTINGS_PATH} or specify one of the following environment variables before running:
-  - GEMINI_API_KEY (for Gemini API)
-  - GOOGLE_GENAI_USE_VERTEXAI=true (for Vertex AI)
-  - GOOGLE_GENAI_USE_GCA=true (for Google Cloud)
-  - AWS_PROFILE or AWS_ACCESS_KEY_ID (for AWS Bedrock)
-  - OPENAI_API_KEY (for OpenAI compatible APIs)`;
+      const message = `Please set an Auth method in your ${USER_SETTINGS_PATH} or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA`;
       throw new Error(message);
     }
 
