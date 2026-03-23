@@ -1,3 +1,6 @@
+# VSCode settings
+.vscode/
+
 # API keys and secrets
 .env
 .env~
