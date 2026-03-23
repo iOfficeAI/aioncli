@@ -88,6 +88,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
   protected client: OpenAI;
   private model: string;
   private config: Config;
+  protected readonly isOpenRouter: boolean;
   private streamingToolCalls: Map<
     number,
     {
@@ -106,6 +107,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
     this.model = model;
     this.config = config;
     const baseURL = process.env['OPENAI_BASE_URL'] || '';
+    this.isOpenRouter = baseURL.includes('openrouter.ai');
 
     // Configure timeout settings - using progressive timeouts
     const timeoutConfig = {
@@ -130,11 +132,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
     const version = process.env['CLI_VERSION'] || process.version;
     const userAgent = `QwenCode/${version} (${process.platform}; ${process.arch})`;
 
-    // Check if using OpenRouter and add required headers
-    const isOpenRouter = baseURL.includes('openrouter.ai');
     const defaultHeaders = {
       'User-Agent': userAgent,
-      ...(isOpenRouter
+      ...(this.isOpenRouter
         ? {
             'HTTP-Referer': 'https://aionui.com',
             'X-Title': 'AionUi',
@@ -294,9 +294,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Enable reasoning for Gemini 3 models on OpenRouter
       // This ensures reasoning_details are returned and can be preserved
-      const baseURL = this.client?.baseURL || '';
-      const isOpenRouter = baseURL.includes('openrouter.ai');
-      if (isOpenRouter && this.isGeminiReasoningModel()) {
+      if (this.isOpenRouter && this.isGeminiReasoningModel()) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (createParams as any).reasoning = {
           // Use 'high' effort for reliable reasoning token generation
@@ -472,9 +470,7 @@ export class OpenAIContentGenerator implements ContentGenerator {
 
       // Enable reasoning for Gemini 3 models on OpenRouter
       // This ensures reasoning_details are returned and can be preserved
-      const baseURL = this.client?.baseURL || '';
-      const isOpenRouter = baseURL.includes('openrouter.ai');
-      if (isOpenRouter && this.isGeminiReasoningModel()) {
+      if (this.isOpenRouter && this.isGeminiReasoningModel()) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (createParams as any).reasoning = {
           // Use 'high' effort for reliable reasoning token generation
@@ -1123,8 +1119,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
               content: textParts.join('\n') || null,
               tool_calls: toolCalls,
             };
-            // Add reasoning_details if present (required for OpenRouter reasoning models)
-            if (reasoningDetails) {
+            // Add reasoning_details only for OpenRouter reasoning models (Gemini 3 Pro, etc.)
+            // Other providers (MiniMax, DeepSeek, etc.) don't accept this field and return 400
+            if (reasoningDetails && this.isOpenRouter) {
               assistantMessage.reasoning_details = reasoningDetails;
             }
             messages.push(
@@ -1142,8 +1139,13 @@ export class OpenAIContentGenerator implements ContentGenerator {
               const message: OpenAI.Chat.ChatCompletionMessageParam & {
                 reasoning_details?: unknown;
               } = { role, content: text };
-              // Add reasoning_details if present and this is an assistant message
-              if (role === 'assistant' && reasoningDetails) {
+              // Add reasoning_details only for OpenRouter reasoning models
+              // Other providers (MiniMax, DeepSeek, etc.) don't accept this field and return 400
+              if (
+                role === 'assistant' &&
+                reasoningDetails &&
+                this.isOpenRouter
+              ) {
                 message.reasoning_details = reasoningDetails;
               }
               messages.push(message as OpenAI.Chat.ChatCompletionMessageParam);
