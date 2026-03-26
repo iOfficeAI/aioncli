@@ -962,8 +962,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
               function: {
                 name: func.name,
                 description: func.description,
+                // Support both Gemini-native `parameters` and core `parametersJsonSchema` (from zodToJsonSchema)
                 parameters: this.convertGeminiParametersToOpenAI(
-                  (func.parameters || {}) as Record<string, unknown>,
+                  (func.parameters || func.parametersJsonSchema || {}) as Record<string, unknown>,
                 ),
               },
             });
