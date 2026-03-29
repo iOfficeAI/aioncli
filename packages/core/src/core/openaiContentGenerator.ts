@@ -165,6 +165,47 @@ export class OpenAIContentGenerator implements ContentGenerator {
   }
 
   /**
+   * Check if stream_options should be included in streaming requests.
+   * Some providers (e.g. Cerebras) strictly validate request parameters
+   * and return 422 for unknown fields like stream_options.
+   * Default: include stream_options (most OpenAI-compatible providers support it).
+   */
+  private shouldIncludeStreamOptions(): boolean {
+    const baseURL = this.client?.baseURL || '';
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(baseURL).hostname;
+    } catch (_e) {
+      return true; // Default to including stream_options
+    }
+    // Providers known to reject stream_options with 422
+    const strictProviders = ['api.cerebras.ai'];
+    return !strictProviders.some(
+      (h) => hostname === h || hostname!.endsWith('.' + h),
+    );
+  }
+
+  /**
+   * Check if store should be included in requests.
+   * Some providers (e.g. Cerebras) reject unsupported fields like store with 422.
+   * Default: include store for GPT models unless provider is known strict.
+   */
+  private shouldIncludeStore(): boolean {
+    const baseURL = this.client?.baseURL || '';
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(baseURL).hostname;
+    } catch (_e) {
+      return true; // Default to including store
+    }
+    // Providers known to reject store with 422
+    const strictProviders = ['api.cerebras.ai'];
+    return !strictProviders.some(
+      (h) => hostname === h || hostname!.endsWith('.' + h),
+    );
+  }
+
+  /**
    * Check if metadata should be included in the request
    * Only include metadata for specific providers that support it
    */
@@ -264,7 +305,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
         modelName.includes('gpt5') ||
         modelName.includes('gpt4')
       ) {
-        createParams.store = true;
+        if (this.shouldIncludeStore()) {
+          createParams.store = true;
+        }
       }
 
       // Handle JSON schema requests (for generateJson calls)
@@ -429,7 +472,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
         messages,
         ...samplingParams,
         stream: true,
-        stream_options: { include_usage: true },
+        ...(this.shouldIncludeStreamOptions() && {
+          stream_options: { include_usage: true },
+        }),
         ...(metadata && { metadata }),
       };
 
@@ -440,7 +485,9 @@ export class OpenAIContentGenerator implements ContentGenerator {
         modelNameStream.includes('gpt5') ||
         modelNameStream.includes('gpt4')
       ) {
-        createParams.store = true;
+        if (this.shouldIncludeStore()) {
+          createParams.store = true;
+        }
       }
 
       // Handle JSON schema requests (for generateJson calls) - same as non-streaming
