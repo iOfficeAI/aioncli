@@ -86,6 +86,31 @@ export class BedrockContentGenerator implements ContentGenerator {
     return 'AWS SDK default credential chain';
   }
 
+  /**
+   * Build inference config with mutually exclusive temperature/topP.
+   * Bedrock forbids sending both for Claude models.
+   * When both are present, prefer temperature (more commonly configured).
+   */
+  private buildInferenceConfig(request: GenerateContentParameters): {
+    maxTokens: number;
+    temperature?: number;
+    topP?: number;
+  } {
+    const config: { maxTokens: number; temperature?: number; topP?: number } = {
+      maxTokens: request.config?.maxOutputTokens || 4096,
+    };
+
+    if (request.config?.temperature !== undefined) {
+      config.temperature = request.config.temperature;
+    } else if (request.config?.topP !== undefined) {
+      config.topP = request.config.topP;
+    } else {
+      config.temperature = 1.0;
+    }
+
+    return config;
+  }
+
   async generateContent(
     request: GenerateContentParameters,
     _userPromptId: string,
@@ -109,11 +134,7 @@ export class BedrockContentGenerator implements ContentGenerator {
             messages,
             system,
             toolConfig,
-            inferenceConfig: {
-              maxTokens: request.config?.maxOutputTokens || 4096,
-              temperature: request.config?.temperature ?? 1.0,
-              topP: request.config?.topP,
-            },
+            inferenceConfig: this.buildInferenceConfig(request),
           });
 
           debugLogger.log(
@@ -172,11 +193,7 @@ export class BedrockContentGenerator implements ContentGenerator {
             messages,
             system,
             toolConfig,
-            inferenceConfig: {
-              maxTokens: request.config?.maxOutputTokens || 4096,
-              temperature: request.config?.temperature ?? 1.0,
-              topP: request.config?.topP,
-            },
+            inferenceConfig: this.buildInferenceConfig(request),
           });
 
           debugLogger.log(
@@ -510,7 +527,7 @@ export class BedrockContentGenerator implements ContentGenerator {
             toolUse: {
               toolUseId: fc.id || `tool_${Date.now()}_${Math.random()}`,
               name: fc.name,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-type-assertion
               input: fc.args as any, // Bedrock accepts any JSON-serializable value
             },
           });
@@ -601,6 +618,7 @@ export class BedrockContentGenerator implements ContentGenerator {
           functionCall: {
             id: toolUse.toolUseId,
             name: toolUse.name || '',
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
             args: (toolUse.input as Record<string, unknown>) || {},
           },
         });
