@@ -778,6 +778,7 @@ describe('OpenAIContentGenerator', () => {
             {
               role: 'assistant',
               content: null,
+              reasoning_content: '',
               tool_calls: [
                 {
                   id: 'call_123',
@@ -1319,6 +1320,7 @@ describe('OpenAIContentGenerator', () => {
             {
               role: 'assistant',
               content: null,
+              reasoning_content: '',
               tool_calls: [
                 {
                   id: 'call_1',
@@ -1338,6 +1340,7 @@ describe('OpenAIContentGenerator', () => {
             {
               role: 'assistant',
               content: null,
+              reasoning_content: '',
               tool_calls: [
                 {
                   id: 'call_2',
@@ -1427,6 +1430,7 @@ describe('OpenAIContentGenerator', () => {
             {
               role: 'assistant',
               content: null,
+              reasoning_content: '',
               tool_calls: [
                 {
                   id: 'call_valid',
@@ -1480,7 +1484,7 @@ describe('OpenAIContentGenerator', () => {
         expect.objectContaining({
           messages: [
             { role: 'user', content: 'Hello' },
-            { role: 'assistant', content: 'Part 1Part 2' },
+            { role: 'assistant', content: 'Part 1Part 2', reasoning_content: '' },
             { role: 'user', content: 'Continue' },
           ],
         }),
