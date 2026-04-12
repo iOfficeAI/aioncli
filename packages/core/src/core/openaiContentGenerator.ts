@@ -102,6 +102,11 @@ export class OpenAIContentGenerator implements ContentGenerator {
   > = new Map();
   // Store reasoning_details for OpenRouter reasoning models (Gemini 3 Pro, etc.)
   private streamingReasoningDetails: unknown = null;
+  // Accumulate reasoning_content from the current streaming response (e.g. Kimi K2.5, DeepSeek).
+  private streamingReasoningContent = '';
+  // Stores the full reasoning_content for each model response, in order.
+  // Used to echo the actual content back when reconstructing assistant messages.
+  private reasoningContentHistory: string[] = [];
 
   constructor(apiKey: string, model: string, config: Config) {
     this.model = model;
@@ -666,10 +671,14 @@ export class OpenAIContentGenerator implements ContentGenerator {
     // Reset the accumulators for each new stream
     this.streamingToolCalls.clear();
     this.streamingReasoningDetails = null;
+    this.streamingReasoningContent = '';
 
     for await (const chunk of stream) {
       yield this.convertStreamChunkToGeminiFormat(chunk, isJsonSchemaRequest);
     }
+
+    // Persist the accumulated reasoning_content for this model turn
+    this.reasoningContentHistory.push(this.streamingReasoningContent);
   }
 
   /**
@@ -1184,23 +1193,10 @@ export class OpenAIContentGenerator implements ContentGenerator {
     const mergedMessages =
       this.mergeConsecutiveAssistantMessages(cleanedMessages);
 
-    // Add reasoning_content for DeepSeek Reasoner models
-    if (this.isDeepSeekReasonerModel()) {
-      return this.addReasoningContentForDeepSeek(mergedMessages);
-    }
-
-    return mergedMessages;
-  }
-
-  /**
-   * Check if the current model is a DeepSeek Reasoner model
-   */
-  private isDeepSeekReasonerModel(): boolean {
-    const modelName = this.model.toLowerCase();
-    return (
-      modelName.includes('deepseek-reasoner') ||
-      modelName.includes('deepseek-r1')
-    );
+    // Add reasoning_content to all assistant messages unconditionally.
+    // Thinking-enabled models (DeepSeek Reasoner, Kimi K2.5, etc.) require this field;
+    // other OpenAI-compatible APIs simply ignore unknown fields.
+    return this.addReasoningContentToAssistantMessages(mergedMessages);
   }
 
   /**
@@ -1283,19 +1279,23 @@ export class OpenAIContentGenerator implements ContentGenerator {
   }
 
   /**
-   * Add reasoning_content field to assistant messages for DeepSeek Reasoner compatibility.
-   * DeepSeek Reasoner models require reasoning_content field in assistant messages during tool calls.
+   * Add reasoning_content field to assistant messages for thinking-enabled models.
+   * Models like Kimi K2.5 require the actual reasoning content to be echoed back;
+   * models like DeepSeek accept an empty string.
+   * We use the stored history when available, falling back to empty string.
    */
-  private addReasoningContentForDeepSeek(
+  private addReasoningContentToAssistantMessages(
     messages: OpenAI.Chat.ChatCompletionMessageParam[],
   ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    let assistantIndex = 0;
     return messages.map((message) => {
       if (message.role === 'assistant') {
-        // Add reasoning_content field if not present
-        // DeepSeek requires this field for multi-turn conversations with tool calls
+        const reasoningContent =
+          this.reasoningContentHistory[assistantIndex] ?? '';
+        assistantIndex++;
         return {
           ...message,
-          reasoning_content: '',
+          reasoning_content: reasoningContent,
         } as OpenAI.Chat.ChatCompletionMessageParam;
       }
       return message;
@@ -1564,6 +1564,15 @@ export class OpenAIContentGenerator implements ContentGenerator {
       parts.push({ text: choice.message.content });
     }
 
+    // Capture reasoning_content from non-streaming responses
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messageReasoningContent = (choice.message as any)?.reasoning_content;
+    this.reasoningContentHistory.push(
+      typeof messageReasoningContent === 'string'
+        ? messageReasoningContent
+        : '',
+    );
+
     // Handle tool calls
     if (choice.message.tool_calls) {
       for (const toolCall of choice.message.tool_calls) {
@@ -1713,6 +1722,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
         this.isValidThoughtSignature(deltaReasoningDetails)
       ) {
         this.streamingReasoningDetails = deltaReasoningDetails;
+      }
+
+      // Accumulate reasoning_content from thinking-enabled models (Kimi K2.5, DeepSeek, etc.)
+      const deltaReasoningContent = choiceAny.delta?.reasoning_content;
+      if (typeof deltaReasoningContent === 'string') {
+        this.streamingReasoningContent += deltaReasoningContent;
       }
 
       // Handle tool calls - only accumulate during streaming, emit when complete
