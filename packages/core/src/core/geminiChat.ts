@@ -706,34 +706,80 @@ export class GeminiChat {
   }
 
   /**
-   * Deduplicates functionResponse parts with the same id across all messages.
-   * This prevents 400 errors from API providers that reject duplicate tool responses.
+   * Deduplicates functionResponse parts and ensures functionCall/functionResponse
+   * counts stay in sync. The Gemini API requires that the number of
+   * functionResponse parts exactly matches the number of functionCall parts.
+   *
+   * Two-pass approach:
+   *  1. Deduplicate functionResponse parts (keep only the first occurrence per id).
+   *  2. Remove orphaned functionCall parts whose id has no matching
+   *     functionResponse, and vice-versa.
    */
   private deduplicateFunctionResponses(history: Content[]): Content[] {
-    const seenFunctionResponseIds = new Set<string>();
-    const result: Content[] = [];
+    // --- Pass 1: deduplicate functionResponse parts --------------------------
+    const seenResponseIds = new Set<string>();
+    const deduplicated: Content[] = [];
 
     for (const content of history) {
       if (!content.parts || content.parts.length === 0) {
-        result.push(content);
+        deduplicated.push(content);
         continue;
       }
 
       const filteredParts = content.parts.filter((part) => {
         if ('functionResponse' in part && part.functionResponse?.id) {
           const id = part.functionResponse.id;
-          if (seenFunctionResponseIds.has(id)) {
-            // Skip duplicate functionResponse
+          if (seenResponseIds.has(id)) {
             return false;
           }
-          seenFunctionResponseIds.add(id);
+          seenResponseIds.add(id);
         }
         return true;
       });
 
-      // Only include content if it still has parts after filtering
       if (filteredParts.length > 0) {
-        result.push({ ...content, parts: filteredParts });
+        deduplicated.push({ ...content, parts: filteredParts });
+      }
+    }
+
+    // --- Pass 2: collect surviving ids and strip orphans ---------------------
+    const functionCallIds = new Set<string>();
+    const functionResponseIds = new Set<string>();
+
+    for (const content of deduplicated) {
+      if (!content.parts) continue;
+      for (const part of content.parts) {
+        if ('functionCall' in part && part.functionCall?.id) {
+          functionCallIds.add(part.functionCall.id);
+        }
+        if ('functionResponse' in part && part.functionResponse?.id) {
+          functionResponseIds.add(part.functionResponse.id);
+        }
+      }
+    }
+
+    const result: Content[] = [];
+
+    for (const content of deduplicated) {
+      if (!content.parts || content.parts.length === 0) {
+        result.push(content);
+        continue;
+      }
+
+      const cleanedParts = content.parts.filter((part) => {
+        // Remove functionCall parts that have no matching functionResponse
+        if ('functionCall' in part && part.functionCall?.id) {
+          return functionResponseIds.has(part.functionCall.id);
+        }
+        // Remove functionResponse parts that have no matching functionCall
+        if ('functionResponse' in part && part.functionResponse?.id) {
+          return functionCallIds.has(part.functionResponse.id);
+        }
+        return true;
+      });
+
+      if (cleanedParts.length > 0) {
+        result.push({ ...content, parts: cleanedParts });
       }
     }
 
