@@ -1188,10 +1188,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
       }
     }
 
-    // Clean up orphaned tool calls and merge consecutive assistant messages
+    // Clean up orphaned tool calls, fix ordering, and merge consecutive assistant messages
     const cleanedMessages = this.cleanOrphanedToolCalls(messages);
+    const reorderedMessages =
+      this.ensureToolResponseOrdering(cleanedMessages);
     const mergedMessages =
-      this.mergeConsecutiveAssistantMessages(cleanedMessages);
+      this.mergeConsecutiveAssistantMessages(reorderedMessages);
 
     // Add reasoning_content to all assistant messages unconditionally.
     // Thinking-enabled models (DeepSeek Reasoner, Kimi K2.5, etc.) require this field;
@@ -1492,6 +1494,71 @@ export class OpenAIContentGenerator implements ContentGenerator {
     }
 
     return finalCleaned;
+  }
+
+  /**
+   * Reorders tool response messages so each one immediately follows the
+   * assistant message whose tool_calls it answers.
+   *
+   * The Gemini history may interleave user Content entries (e.g. system-prompt
+   * injections) between a model's functionCall and the corresponding
+   * functionResponse.  In Gemini-native format that is fine (matching is by id),
+   * but the OpenAI chat-completions API requires every assistant message with
+   * tool_calls to be followed immediately by tool messages for each call id.
+   */
+  private ensureToolResponseOrdering(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    // Build a map: tool_call_id → tool message (first occurrence wins)
+    const toolResponseByCallId = new Map<
+      string,
+      OpenAI.Chat.ChatCompletionMessageParam
+    >();
+    for (const msg of messages) {
+      if (msg.role === 'tool' && 'tool_call_id' in msg && msg.tool_call_id) {
+        if (!toolResponseByCallId.has(msg.tool_call_id)) {
+          toolResponseByCallId.set(msg.tool_call_id, msg);
+        }
+      }
+    }
+
+    // Nothing to reorder if there are no tool messages
+    if (toolResponseByCallId.size === 0) return messages;
+
+    const consumedToolCallIds = new Set<string>();
+    const result: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+
+    for (const msg of messages) {
+      // Skip tool messages at their original position – they will be
+      // re-inserted right after their matching assistant message below.
+      if (msg.role === 'tool' && 'tool_call_id' in msg && msg.tool_call_id) {
+        continue;
+      }
+
+      result.push(msg);
+
+      // After every assistant message that carries tool_calls, immediately
+      // insert the matching tool-response messages.
+      if (msg.role === 'assistant' && 'tool_calls' in msg && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          const toolMsg = toolResponseByCallId.get(tc.id);
+          if (toolMsg) {
+            result.push(toolMsg);
+            consumedToolCallIds.add(tc.id);
+          }
+        }
+      }
+    }
+
+    // Safety: append any unconsumed tool messages at the end so they are not
+    // silently lost.
+    for (const [id, msg] of toolResponseByCallId) {
+      if (!consumedToolCallIds.has(id)) {
+        result.push(msg);
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -2107,10 +2174,12 @@ export class OpenAIContentGenerator implements ContentGenerator {
       }
     }
 
-    // Clean up orphaned tool calls and merge consecutive assistant messages
+    // Clean up orphaned tool calls, fix ordering, and merge consecutive assistant messages
     const cleanedMessages = this.cleanOrphanedToolCallsForLogging(messages);
+    const reorderedMessages =
+      this.ensureToolResponseOrderingForLogging(cleanedMessages);
     const mergedMessages =
-      this.mergeConsecutiveAssistantMessagesForLogging(cleanedMessages);
+      this.mergeConsecutiveAssistantMessagesForLogging(reorderedMessages);
 
     const openaiRequest: OpenAIRequestFormat = {
       model: this.model,
@@ -2236,6 +2305,53 @@ export class OpenAIContentGenerator implements ContentGenerator {
     }
 
     return finalCleaned;
+  }
+
+  /**
+   * Logging variant of ensureToolResponseOrdering for the OpenAIMessage type.
+   */
+  private ensureToolResponseOrderingForLogging(
+    messages: OpenAIMessage[],
+  ): OpenAIMessage[] {
+    const toolResponseByCallId = new Map<string, OpenAIMessage>();
+    for (const msg of messages) {
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        if (!toolResponseByCallId.has(msg.tool_call_id)) {
+          toolResponseByCallId.set(msg.tool_call_id, msg);
+        }
+      }
+    }
+
+    if (toolResponseByCallId.size === 0) return messages;
+
+    const consumedToolCallIds = new Set<string>();
+    const result: OpenAIMessage[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        continue;
+      }
+
+      result.push(msg);
+
+      if (msg.role === 'assistant' && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          const toolMsg = toolResponseByCallId.get(tc.id);
+          if (toolMsg) {
+            result.push(toolMsg);
+            consumedToolCallIds.add(tc.id);
+          }
+        }
+      }
+    }
+
+    for (const [id, msg] of toolResponseByCallId) {
+      if (!consumedToolCallIds.has(id)) {
+        result.push(msg);
+      }
+    }
+
+    return result;
   }
 
   /**
