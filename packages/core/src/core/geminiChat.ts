@@ -711,13 +711,17 @@ export class GeminiChat {
    * functionResponse parts exactly matches the number of functionCall parts.
    *
    * Two-pass approach:
-   *  1. Deduplicate functionResponse parts (keep only the first occurrence per id).
+   *  1. Deduplicate functionResponse parts (keep only the first occurrence per
+   *     id, or per name when id is absent).
    *  2. Remove orphaned functionCall parts whose id has no matching
-   *     functionResponse, and vice-versa.
+   *     functionResponse, and vice-versa.  Only parts that carry an explicit
+   *     `id` participate in orphan removal — parts identified solely by `name`
+   *     are left intact because they may represent in-progress tool calls
+   *     awaiting responses.
    */
   private deduplicateFunctionResponses(history: Content[]): Content[] {
     // --- Pass 1: deduplicate functionResponse parts --------------------------
-    const seenResponseIds = new Set<string>();
+    const seenResponseKeys = new Set<string>();
     const deduplicated: Content[] = [];
 
     for (const content of history) {
@@ -727,12 +731,14 @@ export class GeminiChat {
       }
 
       const filteredParts = content.parts.filter((part) => {
-        if ('functionResponse' in part && part.functionResponse?.id) {
-          const id = part.functionResponse.id;
-          if (seenResponseIds.has(id)) {
-            return false;
+        if ('functionResponse' in part && part.functionResponse) {
+          const key = part.functionResponse.id || part.functionResponse.name;
+          if (key) {
+            if (seenResponseKeys.has(key)) {
+              return false;
+            }
+            seenResponseKeys.add(key);
           }
-          seenResponseIds.add(id);
         }
         return true;
       });

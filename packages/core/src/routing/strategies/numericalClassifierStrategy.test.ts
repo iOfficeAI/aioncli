@@ -443,7 +443,7 @@ describe('NumericalClassifierStrategy', () => {
     expect(consoleWarnSpy).toHaveBeenCalled();
   });
 
-  it('should include tool-related history when sending to classifier', async () => {
+  it('should strip functionCall/functionResponse parts from history sent to classifier', async () => {
     mockContext.history = [
       { role: 'user', parts: [{ text: 'call a tool' }] },
       { role: 'model', parts: [{ functionCall: { name: 'test_tool' } }] },
@@ -469,9 +469,11 @@ describe('NumericalClassifierStrategy', () => {
       .calls[0][0];
     const contents = generateJsonCall.contents;
 
+    // functionCall and functionResponse parts should be stripped;
+    // content entries that become empty after stripping are removed entirely.
     const expectedContents = [
-      ...mockContext.history,
-      // The last user turn is the request part
+      { role: 'user', parts: [{ text: 'call a tool' }] },
+      { role: 'user', parts: [{ text: 'another user turn' }] },
       {
         role: 'user',
         parts: [{ text: 'simple task' }],

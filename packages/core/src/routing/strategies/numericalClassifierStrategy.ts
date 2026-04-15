@@ -14,6 +14,7 @@ import type {
 } from '../routingStrategy.js';
 import { resolveClassifierModel, isGemini3Model } from '../../config/models.js';
 import { createUserContent, Type } from '@google/genai';
+import type { Content } from '@google/genai';
 import type { Config } from '../../config/config.js';
 import { debugLogger } from '../../utils/debugLogger.js';
 import { LlmRole } from '../../telemetry/types.js';
@@ -147,7 +148,12 @@ export class NumericalClassifierStrategy implements RoutingStrategy {
 
       const promptId = getPromptIdWithFallback('classifier-router');
 
-      const finalHistory = context.history.slice(-HISTORY_TURNS_FOR_CONTEXT);
+      // The classifier only needs text context for complexity scoring.
+      // Strip functionCall / functionResponse parts to avoid API errors
+      // caused by mismatched call/response counts in the history.
+      const finalHistory = stripFunctionParts(
+        context.history.slice(-HISTORY_TURNS_FOR_CONTEXT),
+      );
 
       // Wrap the user's request in tags to prevent prompt injection
       const requestParts = Array.isArray(context.request)
@@ -242,4 +248,32 @@ export class NumericalClassifierStrategy implements RoutingStrategy {
 
     return { threshold, groupLabel, modelAlias };
   }
+}
+
+/**
+ * Removes functionCall and functionResponse parts from history contents.
+ * Returns only the text-bearing parts so the classifier never sees
+ * mismatched tool call / response counts.
+ */
+function stripFunctionParts(history: Content[]): Content[] {
+  const result: Content[] = [];
+
+  for (const content of history) {
+    if (!content.parts || content.parts.length === 0) {
+      result.push(content);
+      continue;
+    }
+
+    const textParts = content.parts.filter(
+      (part) =>
+        !('functionCall' in part && part.functionCall) &&
+        !('functionResponse' in part && part.functionResponse),
+    );
+
+    if (textParts.length > 0) {
+      result.push({ ...content, parts: textParts });
+    }
+  }
+
+  return result;
 }
